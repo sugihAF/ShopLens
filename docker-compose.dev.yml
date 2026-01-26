@@ -1,0 +1,193 @@
+# Development Docker Compose with hot reload and volume mounts
+# Usage: docker-compose -f docker-compose.dev.yml up --build
+
+services:
+  # =============================================================================
+  # FastAPI Backend (Development with hot reload)
+  # =============================================================================
+  api:
+    build:
+      context: ./app/api
+      dockerfile: Dockerfile
+    container_name: shoplens-api-dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://shoplens:shoplens@postgres:5432/shoplens
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-not-for-production}
+      - LLM_MODEL=${LLM_MODEL:-gemini-3-flash-preview}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-models/text-embedding-004}
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost:8080
+    volumes:
+      # Mount source code for hot reload
+      - ./app/api/app:/app/app:ro
+      - ./app/api/alembic:/app/alembic:ro
+      - ./app/api/alembic.ini:/app/alembic.ini:ro
+    # Override entrypoint to use --reload flag
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - shoplens-network-dev
+
+  # =============================================================================
+  # React Frontend (Development - serves static files)
+  # =============================================================================
+  web:
+    build:
+      context: ./app/web/landing-page
+      dockerfile: Dockerfile
+    container_name: shoplens-web-dev
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    volumes:
+      # Mount static files for quick updates (rebuild not needed for content changes)
+      - ./app/web/landing-page/index.html:/usr/share/nginx/html/index.html:ro
+      - ./app/web/landing-page/assets:/usr/share/nginx/html/assets:ro
+    depends_on:
+      - api
+    networks:
+      - shoplens-network-dev
+
+  # =============================================================================
+  # PostgreSQL Database (Development)
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: shoplens-postgres-dev
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=shoplens
+      - POSTGRES_PASSWORD=shoplens
+      - POSTGRES_DB=shoplens
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shoplens -d shoplens"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shoplens-network-dev
+
+  # =============================================================================
+  # Redis Cache (Development)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: shoplens-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - shoplens-network-dev
+
+  # =============================================================================
+  # Qdrant Vector Database (Development)
+  # =============================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: shoplens-qdrant-dev
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data_dev:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    networks:
+      - shoplens-network-dev
+
+  # =============================================================================
+  # pgAdmin (Optional - Database Management UI)
+  # =============================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: shoplens-pgadmin-dev
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@shoplens.dev
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    volumes:
+      - pgadmin_data_dev:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - shoplens-network-dev
+    profiles:
+      - tools
+
+  # =============================================================================
+  # Redis Commander (Optional - Redis Management UI)
+  # =============================================================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: shoplens-redis-commander-dev
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    networks:
+      - shoplens-network-dev
+    profiles:
+      - tools
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  shoplens-network-dev:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data_dev:
+    driver: local
+  redis_data_dev:
+    driver: local
+  qdrant_data_dev:
+    driver: local
+  pgadmin_data_dev:
+    driver: local
