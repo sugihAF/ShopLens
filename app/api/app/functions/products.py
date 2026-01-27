@@ -34,7 +34,8 @@ async def search_products(db: AsyncSession, args: Dict[str, Any]) -> Dict[str, A
         return {
             "products": [],
             "total": 0,
-            "message": f"No products found for '{query}'" + (f" in category '{category}'" if category else "")
+            "message": f"No products found for '{query}'" + (f" in category '{category}'" if category else ""),
+            "suggestion": f"To get reviews for '{query}', use the gather_product_reviews function with product_name='{query}'. This will search YouTube and tech blogs for reviews and ingest them into the database."
         }
 
     return {

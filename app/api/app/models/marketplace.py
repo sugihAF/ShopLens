@@ -1,10 +1,10 @@
 """MarketplaceListing model for product availability and pricing."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
-import enum
 
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Numeric, Index
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
@@ -14,27 +14,12 @@ if TYPE_CHECKING:
     from app.models.product import Product
 
 
-class Marketplace(str, enum.Enum):
-    """Supported marketplaces."""
-    AMAZON = "amazon"
-    TOKOPEDIA = "tokopedia"
-    SHOPEE = "shopee"
-    BUKALAPAK = "bukalapak"
-    BLIBLI = "blibli"
-    LAZADA = "lazada"
-    OFFICIAL = "official"  # Official brand store
-
-
-class AvailabilityStatus(str, enum.Enum):
-    """Product availability status."""
-    IN_STOCK = "in_stock"
-    OUT_OF_STOCK = "out_of_stock"
-    PRE_ORDER = "pre_order"
-    UNKNOWN = "unknown"
-
-
 class MarketplaceListing(Base):
-    """MarketplaceListing model for product availability across marketplaces."""
+    """MarketplaceListing model for product availability across marketplaces.
+
+    NOTE: This model matches the actual database schema which uses different
+    column names than the original design.
+    """
     __tablename__ = "marketplace_listings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -45,40 +30,36 @@ class MarketplaceListing(Base):
         index=True
     )
 
-    # Marketplace info
-    marketplace: Mapped[Marketplace] = mapped_column(
-        Enum(Marketplace),
-        nullable=False,
-        index=True
-    )
-    country: Mapped[str] = mapped_column(String(2), default="ID", index=True)  # ISO country code
+    # Marketplace info - matches actual DB columns
+    marketplace_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(10), nullable=False, default="US")
+
+    # Seller info
+    seller_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    seller_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    seller_rating: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2), nullable=True)
 
     # Listing details
-    url: Mapped[str] = mapped_column(String(1000), nullable=False)
-    affiliate_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    listing_url: Mapped[str] = mapped_column(String(512), nullable=False)
 
     # Pricing
-    price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    currency: Mapped[str] = mapped_column(String(3), default="IDR")  # ISO currency code
-    original_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # Before discount
+    price_current: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
+    price_original: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
+    currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, default="USD")
 
     # Availability
-    availability: Mapped[AvailabilityStatus] = mapped_column(
-        Enum(AvailabilityStatus),
-        default=AvailabilityStatus.UNKNOWN
-    )
+    is_available: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    shipping_info: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    condition: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     # Additional metadata
     listing_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
-    # Example listing_metadata:
-    # {
-    #   "seller_name": "Official Store",
-    #   "seller_rating": 4.8,
-    #   "shipping_estimate": "2-3 days",
-    #   "discount_percentage": 10
-    # }
 
     # Timestamps
+    last_checked: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now()
@@ -87,10 +68,6 @@ class MarketplaceListing(Base):
         DateTime(timezone=True),
         onupdate=func.now()
     )
-    last_checked_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True
-    )
 
     # Relationships
     product: Mapped["Product"] = relationship(
@@ -98,11 +75,41 @@ class MarketplaceListing(Base):
         back_populates="marketplace_listings"
     )
 
-    # Indexes
+    # Indexes - match actual DB indexes
     __table_args__ = (
-        Index('ix_marketplace_product_marketplace', 'product_id', 'marketplace', 'country'),
-        Index('ix_marketplace_price', 'product_id', 'price'),
+        Index('ix_marketplace_listings_product_country', 'product_id', 'country_code'),
     )
 
     def __repr__(self) -> str:
-        return f"<MarketplaceListing(product_id={self.product_id}, marketplace={self.marketplace}, price={self.price})>"
+        return f"<MarketplaceListing(product_id={self.product_id}, marketplace={self.marketplace_name}, price={self.price_current})>"
+
+    # Property aliases for compatibility with existing code
+    @property
+    def marketplace(self) -> str:
+        """Alias for marketplace_name for code compatibility."""
+        return self.marketplace_name
+
+    @property
+    def country(self) -> str:
+        """Alias for country_code for code compatibility."""
+        return self.country_code
+
+    @property
+    def url(self) -> str:
+        """Alias for listing_url for code compatibility."""
+        return self.listing_url
+
+    @property
+    def price(self) -> Optional[Decimal]:
+        """Alias for price_current for code compatibility."""
+        return self.price_current
+
+    @property
+    def original_price(self) -> Optional[Decimal]:
+        """Alias for price_original for code compatibility."""
+        return self.price_original
+
+    @property
+    def last_checked_at(self) -> Optional[datetime]:
+        """Alias for last_checked for code compatibility."""
+        return self.last_checked

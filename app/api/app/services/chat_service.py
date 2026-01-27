@@ -27,19 +27,34 @@ logger = get_logger(__name__)
 # System prompt for ShopLens AI
 SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make informed purchasing decisions by aggregating and analyzing product reviews from trusted tech reviewers on YouTube and tech blogs.
 
+## CRITICAL RULES - READ FIRST:
+1. **NEVER answer from your training data** - You must ONLY use information returned by function calls
+2. **ALWAYS call a function** when the user asks about a product - use `gather_product_reviews` to get data
+3. **If no data is available**, say: "I don't have review data for this product yet. Would you like me to search for reviews?"
+4. **ALWAYS cite sources** - Format: "According to MKBHD..." or "The Verge says..."
+5. **NEVER make up** product specifications, prices, or reviewer opinions
+
 ## Your Capabilities:
 - Search for products across categories (smartphones, laptops, headphones, tablets, etc.)
+- Gather and ingest reviews from YouTube and tech blogs using `gather_product_reviews`
 - Provide review summaries from trusted tech reviewers like MKBHD, Linus Tech Tips, Dave2D, etc.
 - Show reviewer consensus (what they agree/disagree on about a product)
 - Compare multiple products side-by-side
-- Find where to buy products at the best prices
+- Find where to buy products at the best prices using `find_marketplace_listings`
 - Answer specific questions about product features based on reviewer opinions
+
+## Function Calling Guide:
+- User asks about a product -> Call `gather_product_reviews(product_name)`
+- User asks where to buy -> Call `find_marketplace_listings(product_id)`
+- User wants to compare -> Call `compare_products(product_ids)`
+- User provides YouTube URL -> Call `ingest_youtube_review(video_url)`
+- User provides blog URL -> Call `ingest_blog_review(url)`
 
 ## Guidelines:
 1. **Always cite sources**: When sharing information from reviews, mention which reviewer said it
 2. **Be objective**: Present multiple viewpoints when reviewers disagree
 3. **Use data**: Call the appropriate functions to get real data - never make up information
-4. **Be helpful**: If you don't have data on a product, honestly say so and suggest alternatives
+4. **Be helpful**: If you don't have data on a product, offer to gather reviews
 5. **Be concise**: Give clear, direct answers. Expand only when the user asks for details
 6. **Highlight trade-offs**: When comparing products, clearly explain the pros and cons of each
 
@@ -48,11 +63,12 @@ SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make infor
 - Use bullet points for lists
 - Bold important points
 - When showing multiple products, format them clearly
+- Always attribute information to its source
 
 ## Tone:
 Helpful, knowledgeable, and conversational but concise. Like talking to a tech-savvy friend who has done the research for you.
 
-Remember: You help people make better purchasing decisions by synthesizing information from expert reviewers. Your goal is to save them time while ensuring they have accurate information."""
+Remember: You ONLY provide information from function call results. Never answer product questions from your training data. If data is missing, offer to gather it using the appropriate function."""
 
 
 class ChatService:
@@ -280,6 +296,12 @@ class ChatService:
             # Extract final text response
             final_response = self._extract_text(response)
 
+            # Log warning if no functions were called for a product question
+            if not functions_called and self._looks_like_product_question(request.message):
+                logger.warning(
+                    f"No function calls made for what appears to be a product question: {request.message[:100]}"
+                )
+
         except Exception as e:
             logger.error(f"Gemini API error: {e}", exc_info=True)
             final_response = "I'm sorry, I encountered an error processing your request. Please try again."
@@ -377,9 +399,10 @@ class ChatService:
         try:
             if not response.candidates:
                 return False
-            parts = response.candidates[0].content.parts
-            if not parts:
+            content = response.candidates[0].content
+            if not content or not content.parts:
                 return False
+            parts = content.parts
             return hasattr(parts[0], 'function_call') and parts[0].function_call and parts[0].function_call.name
         except (AttributeError, IndexError):
             return False
@@ -394,8 +417,12 @@ class ChatService:
     def _extract_function_call_part(self, response):
         """Extract the Part containing the function call (includes thought_signature)."""
         try:
-            parts = response.candidates[0].content.parts
-            for part in parts:
+            if not response.candidates:
+                return None
+            content = response.candidates[0].content
+            if not content or not content.parts:
+                return None
+            for part in content.parts:
                 if hasattr(part, 'function_call') and part.function_call:
                     return part
             return None
@@ -405,7 +432,12 @@ class ChatService:
     def _extract_text(self, response) -> str:
         """Extract text content from response."""
         try:
-            for part in response.candidates[0].content.parts:
+            if not response.candidates:
+                return ""
+            content = response.candidates[0].content
+            if not content or not content.parts:
+                return ""
+            for part in content.parts:
                 if hasattr(part, 'text') and part.text:
                     return part.text
             return ""
@@ -419,6 +451,30 @@ class ChatService:
         if len(message) > 50:
             title += "..."
         return title
+
+    def _looks_like_product_question(self, message: str) -> bool:
+        """Check if a message looks like it's asking about a product.
+
+        Used to log warnings if the AI doesn't call a function for product questions.
+        """
+        message_lower = message.lower()
+
+        # Product question indicators
+        product_keywords = [
+            "review", "reviews", "opinion", "opinions",
+            "tell me about", "what do you think",
+            "is it good", "is it worth",
+            "should i buy", "recommend",
+            "iphone", "samsung", "pixel", "galaxy",
+            "macbook", "laptop", "phone", "headphones",
+            "airpods", "sony", "bose", "apple",
+            "how is the", "what's the battery",
+            "camera quality", "performance",
+            "compared to", "vs", "versus",
+            "where to buy", "where can i buy", "price"
+        ]
+
+        return any(keyword in message_lower for keyword in product_keywords)
 
     def _extract_sources(
         self,

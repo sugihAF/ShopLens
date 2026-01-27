@@ -100,22 +100,58 @@ FUNCTION_DECLARATIONS = [
         }
     },
     {
+        "name": "scrape_marketplace_listings",
+        "description": "Scrape current prices and availability from Amazon and eBay for a product. Use this when user asks where to buy a product and you need fresh marketplace data. This will search marketplaces and store the listings.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search for (e.g., 'iPhone 15 Pro', 'Sony WH-1000XM5')"
+                },
+                "product_id": {
+                    "type": "integer",
+                    "description": "Optional product ID to associate listings with"
+                },
+                "marketplaces": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Marketplaces to search (default: ['amazon', 'ebay'])"
+                },
+                "country": {
+                    "type": "string",
+                    "description": "Country code (default: US)",
+                    "enum": ["US", "UK", "DE", "FR", "JP", "AU", "CA"]
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
         "name": "find_marketplace_listings",
-        "description": "Find where to buy a product with current prices from various marketplaces. Use when the user asks about prices or where to buy.",
+        "description": "Find where to buy a product with current prices from Amazon, eBay, and other marketplaces. Automatically scrapes fresh listings if none exist or data is stale (>24 hours). Use when the user asks about prices or where to buy.",
         "parameters": {
             "type": "object",
             "properties": {
                 "product_id": {
                     "type": "integer",
-                    "description": "The product ID"
+                    "description": "The product ID (use this if you have the ID)"
+                },
+                "product_name": {
+                    "type": "string",
+                    "description": "Product name to search for (use this if you don't have product_id)"
                 },
                 "country": {
                     "type": "string",
-                    "description": "Country code for marketplace selection (default: ID for Indonesia)",
-                    "enum": ["ID", "US", "UK", "SG", "MY", "AU"]
+                    "description": "Country code for marketplace selection (default: US)",
+                    "enum": ["US", "UK", "DE", "FR", "JP", "AU", "CA", "ID", "SG", "MY"]
+                },
+                "force_refresh": {
+                    "type": "boolean",
+                    "description": "If true, scrape fresh listings even if cached data exists"
                 }
             },
-            "required": ["product_id"]
+            "required": []
         }
     },
     {
@@ -185,6 +221,60 @@ FUNCTION_DECLARATIONS = [
             },
             "required": ["url"]
         }
+    },
+    {
+        "name": "gather_product_reviews",
+        "description": "Gather and ingest product reviews from YouTube and tech blogs. Use this when the user asks about a product and you need to find reviews. This function searches for reviews, ingests them, and returns aggregated data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to gather reviews for (e.g., 'iPhone 15 Pro', 'Samsung Galaxy S24')"
+                },
+                "force_refresh": {
+                    "type": "boolean",
+                    "description": "If true, fetch new reviews even if cached data exists (default: false)"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
+        "name": "search_youtube_reviews",
+        "description": "Search for YouTube video reviews of a product. Returns a list of YouTube URLs from trusted tech reviewers. Use this when you specifically need YouTube review URLs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search reviews for"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of URLs to return (default: 5)"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
+        "name": "search_blog_reviews",
+        "description": "Search for tech blog reviews of a product. Returns a list of blog URLs from trusted tech publications (The Verge, CNET, TechRadar, etc.). Use this when you specifically need written blog review URLs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search reviews for"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of URLs to return (default: 5)"
+                }
+            },
+            "required": ["product_name"]
+        }
     }
 ]
 
@@ -234,7 +324,7 @@ async def execute_function(
 
 
 # Import function implementations to register them
-from app.functions import products, reviews, search, comparison, marketplace, reviewers, ingestion
+from app.functions import products, reviews, search, comparison, marketplace, reviewers, ingestion, gather
 
 # Ensure all functions are registered
 __all__ = ["FUNCTION_DECLARATIONS", "execute_function", "register_function"]

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from firecrawl import FirecrawlApp
 from google import genai
 from google.genai import types
@@ -124,22 +125,27 @@ class FirecrawlService:
 
         # Step 1: Scrape the URL with Firecrawl
         try:
-            scrape_result = self.firecrawl_client.scrape_url(
+            # Firecrawl SDK v4.x uses scrape() method, not scrape_url()
+            scrape_result = self.firecrawl_client.scrape(
                 url,
-                params={
-                    "formats": ["markdown"],
-                    "onlyMainContent": True,
-                }
+                formats=['markdown']
             )
         except Exception as e:
             logger.error(f"Firecrawl scraping failed for {url}: {e}")
             raise RuntimeError(f"Failed to scrape URL: {str(e)}")
 
-        if not scrape_result or not scrape_result.get("markdown"):
-            raise RuntimeError("Firecrawl returned empty content")
+        # Handle both dict response and object response from SDK
+        if hasattr(scrape_result, 'markdown'):
+            content = scrape_result.markdown
+            metadata = getattr(scrape_result, 'metadata', {}) or {}
+        elif isinstance(scrape_result, dict):
+            content = scrape_result.get("markdown", "")
+            metadata = scrape_result.get("metadata", {})
+        else:
+            raise RuntimeError("Firecrawl returned unexpected response format")
 
-        content = scrape_result["markdown"]
-        metadata = scrape_result.get("metadata", {})
+        if not content:
+            raise RuntimeError("Firecrawl returned empty content")
 
         logger.info(f"Scraped {len(content)} characters from {url}")
 
@@ -235,8 +241,27 @@ class FirecrawlService:
                 "message": f"Could not find or create product: {extracted_data.get('product_name', 'Unknown')}. Please create the product first or provide a product_id."
             }
 
-        # Step 3: Create review
-        review = await self._create_review(db, product, reviewer, extracted_data, url)
+        # Step 3: Create review (with duplicate handling for race conditions)
+        try:
+            review = await self._create_review(db, product, reviewer, extracted_data, url)
+        except IntegrityError:
+            # Race condition: review was inserted by another concurrent request
+            await db.rollback()
+            # Get the existing review that was inserted
+            existing_check = await db.execute(
+                select(Review).where(Review.platform_url == url)
+            )
+            existing = existing_check.scalar_one_or_none()
+            if existing:
+                logger.info(f"Review already exists (race condition): {url}")
+                return {
+                    "status": "already_exists",
+                    "review_id": existing.id,
+                    "message": f"Review already ingested (concurrent request)"
+                }
+            else:
+                # Something else went wrong, re-raise
+                raise
 
         # Step 4: Create opinions
         opinions_created = await self._create_opinions(db, review, extracted_data)

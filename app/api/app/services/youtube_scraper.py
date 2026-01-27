@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from google import genai
 from google.genai import types
 
@@ -367,14 +368,30 @@ Format your response as JSON:
                 "review_data": review_data
             }
 
-        # Step 5: Create Review record
-        review = await self._create_review(
-            db,
-            video_content,
-            review_data,
-            reviewer.id,
-            product_id
-        )
+        # Step 5: Create Review record (with duplicate handling for race conditions)
+        try:
+            review = await self._create_review(
+                db,
+                video_content,
+                review_data,
+                reviewer.id,
+                product_id
+            )
+        except IntegrityError:
+            # Race condition: review was inserted by another concurrent request
+            await db.rollback()
+            # Get the existing review that was inserted
+            existing_review = await review_crud.get_by_platform_url(db, video_url)
+            if existing_review:
+                logger.info(f"Review already exists (race condition): {video_url}")
+                return {
+                    "status": "exists",
+                    "message": "Review already ingested (concurrent request)",
+                    "review_id": existing_review.id
+                }
+            else:
+                # Something else went wrong, re-raise
+                raise
 
         # Step 6: Create Opinion records
         opinions = await self._create_opinions(db, review.id, review_data.get("opinions", []))
