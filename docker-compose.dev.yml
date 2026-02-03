@@ -50,20 +50,25 @@ services:
       - shoplens-network-dev
 
   # =============================================================================
-  # React Frontend (Development - serves static files)
+  # React Frontend (Development - Vite dev server with HMR)
   # =============================================================================
   web:
     build:
       context: ./app/web/landing-page
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: shoplens-web-dev
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "5173:5173"
     volumes:
-      # Mount static files for quick updates (rebuild not needed for content changes)
-      - ./app/web/landing-page/index.html:/usr/share/nginx/html/index.html:ro
-      - ./app/web/landing-page/assets:/usr/share/nginx/html/assets:ro
+      # Mount source code for hot module replacement
+      - ./app/web/landing-page/src:/app/src:ro
+      - ./app/web/landing-page/index.html:/app/index.html:ro
+      - ./app/web/landing-page/vite.config.ts:/app/vite.config.ts:ro
+      - ./app/web/landing-page/tsconfig.json:/app/tsconfig.json:ro
+      - ./app/web/landing-page/tailwind.config.js:/app/tailwind.config.js:ro
+    environment:
+      - VITE_API_URL=http://api:8000
     depends_on:
       - api
     networks:
