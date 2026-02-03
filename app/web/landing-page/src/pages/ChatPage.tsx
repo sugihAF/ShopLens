@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChat } from '@/hooks'
 import { formatMarkdown } from '@/lib/utils'
 import { LogoIcon, SendIcon } from '@/components/ui'
-import type { ChatMessage } from '@/types'
+import type { ChatMessage, ReviewerCard, Attachment } from '@/types'
 
 // Icons
 function ArrowLeftIcon({ className }: { className?: string }) {
@@ -89,34 +89,185 @@ function AIAvatar() {
   )
 }
 
+// Play icon for video reviews
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  )
+}
+
+// External link icon
+function ExternalLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  )
+}
+
+// Single reviewer card component
+function ReviewerCardItem({ card, index }: { card: ReviewerCard; index: number }) {
+  const isVideo = card.review_type === 'video'
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay: index * 0.1, ease: [0.16, 1, 0.3, 1] }}
+      className="bg-[var(--color-bg-secondary)] border border-[var(--color-glass-border)] rounded-xl overflow-hidden hover:border-[var(--color-accent-primary)]/30 transition-all duration-300 group"
+    >
+      {/* Header with reviewer name and badge */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-glass-border)] bg-[var(--color-bg-tertiary)]">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--color-accent-tertiary)] to-[var(--color-accent-primary)] flex items-center justify-center text-[var(--color-bg-primary)] text-sm font-bold">
+            {card.reviewer_name.charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
+              {card.reviewer_name}
+            </h4>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${
+              isVideo
+                ? 'bg-[rgba(239,68,68,0.15)] text-red-400'
+                : 'bg-[rgba(59,130,246,0.15)] text-blue-400'
+            }`}>
+              {isVideo ? 'YouTube' : 'Blog'}
+            </span>
+          </div>
+        </div>
+        {card.rating && (
+          <div className="flex items-center gap-1 text-[var(--color-accent-primary)]">
+            <span className="text-lg font-bold">{card.rating}</span>
+            <span className="text-xs text-[var(--color-text-muted)]">/10</span>
+          </div>
+        )}
+      </div>
+
+      {/* Summary */}
+      <div className="px-4 py-3">
+        <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed line-clamp-3">
+          {card.summary || 'No summary available'}
+        </p>
+      </div>
+
+      {/* Link to review */}
+      {card.review_url && (
+        <div className="px-4 pb-3">
+          <a
+            href={card.review_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-glass-border)] rounded-lg text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:border-[var(--color-accent-primary)]/30 transition-all duration-200 group-hover:bg-[var(--color-bg-primary)]"
+          >
+            {isVideo ? (
+              <>
+                <PlayIcon className="w-4 h-4 text-red-400" />
+                <span>Watch Review</span>
+              </>
+            ) : (
+              <>
+                <ExternalLinkIcon className="w-4 h-4" />
+                <span>Read Review</span>
+              </>
+            )}
+          </a>
+        </div>
+      )}
+    </motion.div>
+  )
+}
+
+// Reviewer cards grid component
+function ReviewerCards({ cards }: { cards: ReviewerCard[]; productName?: string }) {
+  if (!cards || cards.length === 0) return null
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      className="mt-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          Expert Reviews
+        </h3>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          ({cards.length} sources)
+        </span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {cards.map((card, index) => (
+          <ReviewerCardItem key={`${card.reviewer_name}-${index}`} card={card} index={index} />
+        ))}
+      </div>
+    </motion.div>
+  )
+}
+
+// Attachments renderer
+function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
+  return (
+    <>
+      {attachments.map((attachment, index) => {
+        if (attachment.type === 'reviewer_cards') {
+          const data = attachment.data as { product_name: string; cards: ReviewerCard[] }
+          return (
+            <ReviewerCards
+              key={`attachment-${index}`}
+              cards={data.cards}
+              productName={data.product_name}
+            />
+          )
+        }
+        return null
+      })}
+    </>
+  )
+}
+
 // Message bubble component
 function MessageBubble({ message, isTyping }: { message: ChatMessage; isTyping?: boolean }) {
   const isUser = message.role === 'user'
+  const hasAttachments = !isUser && message.attachments && message.attachments.length > 0
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 16, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-      className={`flex gap-4 ${isUser ? 'justify-end' : 'items-start'}`}
+      className={`flex gap-4 ${isUser ? 'justify-end' : 'items-start flex-col'}`}
     >
-      {!isUser && <AIAvatar />}
-      <div
-        className={`relative max-w-[75%] ${
-          isUser
-            ? 'bg-[var(--color-accent-primary)] text-[var(--color-bg-primary)] rounded-2xl rounded-br-sm px-5 py-3.5 font-medium shadow-lg shadow-[rgba(245,158,11,0.2)]'
-            : 'bg-[var(--color-bg-tertiary)] border border-[var(--color-glass-border)] text-[var(--color-text-secondary)] rounded-2xl rounded-tl-sm px-5 py-4'
-        }`}
-      >
-        {isTyping ? (
-          <TypingIndicator />
-        ) : (
-          <div
-            className="text-[15px] leading-relaxed [&_strong]:text-[var(--color-text-primary)] [&_strong]:font-semibold [&_ul]:mt-3 [&_ul]:space-y-1.5 [&_li]:flex [&_li]:items-start [&_li]:gap-2 [&_p]:mb-2 [&_p:last-child]:mb-0"
-            dangerouslySetInnerHTML={{ __html: formatMarkdown(message.content) }}
-          />
-        )}
+      <div className={`flex gap-4 ${isUser ? 'justify-end' : 'items-start'} w-full`}>
+        {!isUser && <AIAvatar />}
+        <div
+          className={`relative ${hasAttachments ? 'max-w-full' : 'max-w-[75%]'} ${
+            isUser
+              ? 'bg-[var(--color-accent-primary)] text-[var(--color-bg-primary)] rounded-2xl rounded-br-sm px-5 py-3.5 font-medium shadow-lg shadow-[rgba(245,158,11,0.2)]'
+              : 'bg-[var(--color-bg-tertiary)] border border-[var(--color-glass-border)] text-[var(--color-text-secondary)] rounded-2xl rounded-tl-sm px-5 py-4'
+          }`}
+        >
+          {isTyping ? (
+            <TypingIndicator />
+          ) : (
+            <div
+              className="text-[15px] leading-relaxed [&_strong]:text-[var(--color-text-primary)] [&_strong]:font-semibold [&_ul]:mt-3 [&_ul]:space-y-1.5 [&_li]:flex [&_li]:items-start [&_li]:gap-2 [&_p]:mb-2 [&_p:last-child]:mb-0"
+              dangerouslySetInnerHTML={{ __html: formatMarkdown(message.content) }}
+            />
+          )}
+        </div>
       </div>
+
+      {/* Render attachments (reviewer cards, etc.) */}
+      {hasAttachments && (
+        <div className="pl-13 w-full">
+          <MessageAttachments attachments={message.attachments!} />
+        </div>
+      )}
     </motion.div>
   )
 }

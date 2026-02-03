@@ -182,6 +182,7 @@ class ChatService:
 
         start_time = time.time()
         functions_called = []
+        function_results = []  # Store function results for attachment extraction
 
         # Get or create conversation
         conversation = None
@@ -253,6 +254,13 @@ class ChatService:
                     function_args
                 )
 
+                # Store function result for attachment extraction
+                function_results.append({
+                    "name": function_name,
+                    "args": function_args,
+                    "result": function_result
+                })
+
                 # CRITICAL: Append the complete model response to preserve thought_signature
                 # The model's content includes the function_call part WITH thought_signature
                 model_content = response.candidates[0].content
@@ -311,7 +319,7 @@ class ChatService:
 
         # Extract sources and attachments from function results
         sources = self._extract_sources(functions_called, conversation.context)
-        attachments = self._extract_attachments(functions_called, conversation.context)
+        attachments = self._extract_attachments(function_results)
 
         # Save assistant message
         assistant_message = await conversation_crud.add_message(
@@ -489,13 +497,90 @@ class ChatService:
 
     def _extract_attachments(
         self,
-        functions_called: List[str],
-        context: Optional[Dict]
+        function_results: List[Dict[str, Any]]
     ) -> List[Attachment]:
-        """Extract attachments based on functions called."""
+        """Extract attachments from function results."""
         attachments = []
-        # Attachments like comparison tables would be generated here
-        # For now, return empty list - will be enhanced with actual data
+
+        for func_result in function_results:
+            func_name = func_result.get("name")
+            result = func_result.get("result", {})
+
+            # Extract reviewer cards from gather_product_reviews
+            if func_name == "gather_product_reviews" and result.get("status") == "success":
+                reviews = result.get("reviews", [])
+
+                # Get 3-5 reviewer cards
+                reviewer_cards = []
+                seen_reviewers = set()
+
+                for review in reviews:
+                    reviewer = review.get("reviewer", "Unknown")
+                    if reviewer in seen_reviewers:
+                        continue
+                    seen_reviewers.add(reviewer)
+
+                    card = {
+                        "reviewer_name": reviewer,
+                        "reviewer_id": review.get("reviewer_id"),
+                        "review_url": review.get("platform_url"),
+                        "review_type": review.get("review_type", "video"),
+                        "summary": review.get("summary", ""),
+                        "rating": review.get("overall_rating"),
+                        "pros": review.get("pros", [])[:3],
+                        "cons": review.get("cons", [])[:3],
+                    }
+                    reviewer_cards.append(card)
+
+                    if len(reviewer_cards) >= 5:
+                        break
+
+                if reviewer_cards:
+                    attachments.append(Attachment(
+                        type="reviewer_cards",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "cards": reviewer_cards
+                        }
+                    ))
+
+            # Extract reviewer cards from get_product_reviews
+            elif func_name == "get_product_reviews" and result.get("reviews"):
+                reviews = result.get("reviews", [])
+
+                reviewer_cards = []
+                seen_reviewers = set()
+
+                for review in reviews:
+                    reviewer = review.get("reviewer", "Unknown")
+                    if reviewer in seen_reviewers:
+                        continue
+                    seen_reviewers.add(reviewer)
+
+                    card = {
+                        "reviewer_name": reviewer,
+                        "reviewer_id": review.get("reviewer_id"),
+                        "review_url": review.get("platform_url"),
+                        "review_type": review.get("review_type", "video"),
+                        "summary": review.get("summary", ""),
+                        "rating": review.get("overall_rating"),
+                        "pros": review.get("pros", [])[:3],
+                        "cons": review.get("cons", [])[:3],
+                    }
+                    reviewer_cards.append(card)
+
+                    if len(reviewer_cards) >= 5:
+                        break
+
+                if reviewer_cards:
+                    attachments.append(Attachment(
+                        type="reviewer_cards",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "cards": reviewer_cards
+                        }
+                    ))
+
         return attachments
 
     async def _update_conversation_context(

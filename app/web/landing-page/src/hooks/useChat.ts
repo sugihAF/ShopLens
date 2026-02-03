@@ -19,6 +19,7 @@ export function useChat() {
         content: data.message.content,
         timestamp: new Date(data.message.created_at),
         sources: data.message.sources || undefined,
+        attachments: data.message.attachments || undefined,
       }
 
       setMessages((prev) => [...prev, assistantMessage])

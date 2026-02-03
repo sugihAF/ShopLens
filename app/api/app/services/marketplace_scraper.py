@@ -147,7 +147,16 @@ Only include real product listings. Do not make up data."""
                 )
             )
 
-            response_text = response.text
+            response_text = response.text or ""
+
+            if not response_text:
+                logger.warning(f"Empty response from Gemini for Amazon search: {product_name}")
+                return {
+                    "status": "no_results",
+                    "marketplace": "amazon",
+                    "listings": [],
+                    "product_name": product_name
+                }
 
             # Parse JSON response
             try:
@@ -242,7 +251,16 @@ Only include real product listings. Do not make up data."""
                 )
             )
 
-            response_text = response.text
+            response_text = response.text or ""
+
+            if not response_text:
+                logger.warning(f"Empty response from Gemini for eBay search: {product_name}")
+                return {
+                    "status": "no_results",
+                    "marketplace": "ebay",
+                    "listings": [],
+                    "product_name": product_name
+                }
 
             # Parse JSON response
             try:

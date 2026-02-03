@@ -307,7 +307,17 @@ Only include actual YouTube video URLs that exist. Do not make up URLs."""
             )
         )
 
-        response_text = response.text
+        response_text = response.text or ""
+
+        # Check if we got a valid response
+        if not response_text:
+            logger.warning(f"Empty response from Gemini for YouTube search: {product_name}")
+            return {
+                "status": "no_results",
+                "message": f"Could not search YouTube for '{product_name}'",
+                "urls": [],
+                "product_name": product_name
+            }
 
         # Extract URLs from response
         import re
@@ -433,7 +443,17 @@ Only include actual blog review URLs that exist. Do not make up URLs."""
             )
         )
 
-        response_text = response.text
+        response_text = response.text or ""
+
+        # Check if we got a valid response
+        if not response_text:
+            logger.warning(f"Empty response from Gemini for blog search: {product_name}")
+            return {
+                "status": "no_results",
+                "message": f"Could not search blogs for '{product_name}'",
+                "urls": [],
+                "product_name": product_name
+            }
 
         # Extract URLs from response
         import re

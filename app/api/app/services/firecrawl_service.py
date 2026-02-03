@@ -163,7 +163,10 @@ class FirecrawlService:
             )
 
             # Parse the JSON response
-            response_text = response.text.strip()
+            response_text = (response.text or "").strip()
+            if not response_text:
+                logger.warning(f"Empty response from Gemini for blog extraction: {url}")
+                raise RuntimeError("Empty response from Gemini for extraction")
             # Remove markdown code blocks if present
             if response_text.startswith("```json"):
                 response_text = response_text[7:]

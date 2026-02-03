@@ -972,6 +972,17 @@ body {
 /* Margin auto for centering */
 .mx-auto { margin-left: auto; margin-right: auto; }
 
+/* Line clamp for text truncation */
+.line-clamp-3 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+/* Padding left for alignment */
+.pl-13 { padding-left: 3.25rem; }
+
 /* Border styles */
 .border { border-width: 1px; }
 .border-t { border-top-width: 1px; }
