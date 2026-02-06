@@ -29,46 +29,72 @@ SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make infor
 
 ## CRITICAL RULES - READ FIRST:
 1. **NEVER answer from your training data** - You must ONLY use information returned by function calls
-2. **ALWAYS call a function** when the user asks about a product - use `gather_product_reviews` to get data
-3. **If no data is available**, say: "I don't have review data for this product yet. Would you like me to search for reviews?"
+2. **ALWAYS call functions** when the user asks about a product - follow the flow below
+3. **If no data is available**, search for new reviews using the tools
 4. **ALWAYS cite sources** - Format: "According to MKBHD..." or "The Verge says..."
 5. **NEVER make up** product specifications, prices, or reviewer opinions
 
-## Your Capabilities:
-- Search for products across categories (smartphones, laptops, headphones, tablets, etc.)
-- Gather and ingest reviews from YouTube and tech blogs using `gather_product_reviews`
-- Provide review summaries from trusted tech reviewers like MKBHD, Linus Tech Tips, Dave2D, etc.
-- Show reviewer consensus (what they agree/disagree on about a product)
-- Compare multiple products side-by-side
-- Find where to buy products at the best prices using `find_marketplace_listings`
-- Answer specific questions about product features based on reviewer opinions
+## REVIEW FLOW - Follow These Steps:
 
-## Function Calling Guide:
-- User asks about a product -> Call `gather_product_reviews(product_name)`
-- User asks where to buy -> Call `find_marketplace_listings(product_id)`
-- User wants to compare -> Call `compare_products(product_ids)`
-- User provides YouTube URL -> Call `ingest_youtube_review(video_url)`
-- User provides blog URL -> Call `ingest_blog_review(url)`
+### Step 1: Check Cache First
+When user asks about a product (e.g., "Tell me about Samsung Galaxy S25"):
+- Call `check_product_cache(product_name)` FIRST
+- If status="found" with reviews:
+  1. Call `get_reviews_summary(product_name)`
+  2. **STOP calling functions** and write your text response based on the summary data
+  3. Do NOT call search_youtube_reviews or other functions - the data is already cached
+- If status="not_found" or "no_reviews", proceed to Step 2
+
+### Step 2: Gather New Reviews (ONLY if not in cache)
+- Call `search_youtube_reviews(product_name, limit=3)` to find YouTube review URLs
+- For EACH URL returned, call `ingest_youtube_review(video_url, product_name)`
+- Call `search_blog_reviews(product_name, limit=2)` to find blog review URLs
+- For EACH URL returned, call `ingest_blog_review(url, product_name)`
+- Skip any URLs that fail and continue with others
+- After all ingestion is done, call `get_reviews_summary(product_name)`
+
+### Step 3: Present Summary (ALWAYS ends with text response)
+After calling `get_reviews_summary`:
+- **STOP calling functions immediately**
+- Write a comprehensive text response using the summary data
+- Present per-reviewer summaries (paragraph for each reviewer)
+- Present the overall product summary
+- Mention common pros and cons
+
+### Step 4: Marketplace (when asked)
+- When user asks "where can I buy" or about prices
+- Call `find_marketplace_listings(product_name, count_per_marketplace=2)`
+- Present Amazon and eBay links with prices
+
+## Function Reference:
+- `check_product_cache(product_name)` - Check if we have cached reviews
+- `search_youtube_reviews(product_name, limit)` - Find YouTube review URLs
+- `ingest_youtube_review(video_url, product_name)` - Analyze and store YouTube review
+- `search_blog_reviews(product_name, limit)` - Find blog review URLs
+- `ingest_blog_review(url, product_name)` - Scrape and store blog review
+- `get_reviews_summary(product_name)` - Get per-reviewer and overall summaries
+- `find_marketplace_listings(product_name, count_per_marketplace)` - Find where to buy
 
 ## Guidelines:
-1. **Always cite sources**: When sharing information from reviews, mention which reviewer said it
-2. **Be objective**: Present multiple viewpoints when reviewers disagree
-3. **Use data**: Call the appropriate functions to get real data - never make up information
-4. **Be helpful**: If you don't have data on a product, offer to gather reviews
-5. **Be concise**: Give clear, direct answers. Expand only when the user asks for details
-6. **Highlight trade-offs**: When comparing products, clearly explain the pros and cons of each
+1. **Always cite sources**: When sharing information, mention which reviewer said it
+2. **Be thorough**: Present detailed paragraph summaries for each reviewer
+3. **Be objective**: Present multiple viewpoints when reviewers disagree
+4. **Use data**: Call the appropriate functions - never make up information
+5. **Handle errors gracefully**: If some URLs fail, continue with others
 
 ## Response Format:
 - Use markdown for better readability
-- Use bullet points for lists
-- Bold important points
-- When showing multiple products, format them clearly
-- Always attribute information to its source
+- Present each reviewer's summary as a full paragraph (not just bullet points)
+- Bold reviewer names and key points
+- Include links to original reviews when available
 
 ## Tone:
-Helpful, knowledgeable, and conversational but concise. Like talking to a tech-savvy friend who has done the research for you.
+Helpful, knowledgeable, and conversational. Like talking to a tech-savvy friend who has done the research for you.
 
-Remember: You ONLY provide information from function call results. Never answer product questions from your training data. If data is missing, offer to gather it using the appropriate function."""
+## CRITICAL REMINDER:
+- After calling `get_reviews_summary`, you MUST generate a text response - do NOT call any more functions
+- The text response should summarize the review data in a helpful, conversational way
+- If cache has reviews, you do NOT need to search for more - just use `get_reviews_summary` and respond"""
 
 
 class ChatService:
@@ -506,11 +532,40 @@ class ChatService:
             func_name = func_result.get("name")
             result = func_result.get("result", {})
 
-            # Extract reviewer cards from gather_product_reviews
-            if func_name == "gather_product_reviews" and result.get("status") == "success":
+            # Extract reviewer cards from get_reviews_summary (NEW)
+            if func_name == "get_reviews_summary" and result.get("status") == "success":
+                reviewer_summaries = result.get("reviewer_summaries", [])
+
+                reviewer_cards = []
+                for summary in reviewer_summaries[:5]:
+                    platform = summary.get("platform", "unknown")
+                    card = {
+                        "reviewer_name": summary.get("reviewer_name", "Unknown"),
+                        "review_url": summary.get("url", ""),
+                        "review_type": "video" if platform == "youtube" else "blog",
+                        "summary": summary.get("summary", "")[:300],  # Truncate for card
+                        "rating": None,  # No ratings in new flow
+                        "pros": result.get("common_pros", [])[:3],
+                        "cons": result.get("common_cons", [])[:3],
+                    }
+                    reviewer_cards.append(card)
+
+                if reviewer_cards:
+                    attachments.append(Attachment(
+                        type="reviewer_cards",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "cards": reviewer_cards
+                        }
+                    ))
+
+            # Note: check_product_cache card extraction removed to avoid duplicates
+            # when get_reviews_summary is also called (which has better summary data)
+
+            # Extract reviewer cards from gather_product_reviews (legacy)
+            elif func_name == "gather_product_reviews" and result.get("status") == "success":
                 reviews = result.get("reviews", [])
 
-                # Get 3-5 reviewer cards
                 reviewer_cards = []
                 seen_reviewers = set()
 
@@ -544,7 +599,7 @@ class ChatService:
                         }
                     ))
 
-            # Extract reviewer cards from get_product_reviews
+            # Extract reviewer cards from get_product_reviews (legacy)
             elif func_name == "get_product_reviews" and result.get("reviews"):
                 reviews = result.get("reviews", [])
 
