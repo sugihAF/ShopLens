@@ -13,6 +13,7 @@ This module implements:
 import re
 import json
 import asyncio
+import httpx
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -31,6 +32,9 @@ from app.models.reviewer import Reviewer, Platform
 from app.models.review import Review, ReviewType, ProcessingStatus
 
 logger = get_logger(__name__)
+
+# Firecrawl search API
+FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
 
 
 def _get_gemini_client():
@@ -73,6 +77,158 @@ async def _call_gemini_with_timeout(client, model: str, contents, config, timeou
     except asyncio.TimeoutError:
         logger.error(f"Gemini API call timed out after {timeout} seconds")
         raise TimeoutError(f"Gemini API call timed out after {timeout} seconds")
+
+
+async def _call_gemini_with_retry(client, model: str, contents, config, timeout: int = GEMINI_TIMEOUT, max_retries: int = 1):
+    """
+    Call Gemini API with timeout and retry on failure.
+
+    Args:
+        client: Gemini client instance
+        model: Model name
+        contents: Prompt contents
+        config: Generation config
+        timeout: Timeout in seconds per attempt
+        max_retries: Number of retries after first failure (default 1, so 2 total attempts)
+
+    Returns:
+        Gemini API response
+    """
+    last_error = None
+    for attempt in range(1 + max_retries):
+        try:
+            if attempt > 0:
+                logger.info(f"Retry attempt {attempt}/{max_retries}...")
+            return await _call_gemini_with_timeout(client, model, contents, config, timeout)
+        except (TimeoutError, Exception) as e:
+            last_error = e
+            logger.warning(f"Gemini call failed (attempt {attempt + 1}/{1 + max_retries}): {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(2)  # Brief pause before retry
+    raise last_error
+
+
+def _extract_urls_from_grounding(response, domain_filter: Optional[str] = None) -> List[str]:
+    """
+    Extract URLs from Gemini grounding metadata chunks.
+
+    The grounding_metadata.grounding_chunks contain the actual URLs that
+    Google Search found — these are real, verified URLs.
+
+    Args:
+        response: Gemini API response object
+        domain_filter: Optional domain substring to filter (e.g. "youtube.com")
+
+    Returns:
+        Deduplicated list of URLs from grounding chunks
+    """
+    urls = []
+    try:
+        metadata = response.candidates[0].grounding_metadata
+        if not metadata or not metadata.grounding_chunks:
+            logger.debug("No grounding_metadata or grounding_chunks in response")
+            return urls
+        for chunk in metadata.grounding_chunks:
+            if hasattr(chunk, 'web') and chunk.web and hasattr(chunk.web, 'uri'):
+                uri = chunk.web.uri
+                if uri and (domain_filter is None or domain_filter in uri):
+                    urls.append(uri)
+        logger.info(f"Grounding chunks: {len(metadata.grounding_chunks)} total, "
+                     f"{len(urls)} matched filter '{domain_filter}'")
+    except (AttributeError, IndexError) as e:
+        logger.debug(f"Could not extract grounding URLs: {e}")
+    # Deduplicate while preserving order
+    seen = set()
+    return [u for u in urls if not (u in seen or seen.add(u))]
+
+
+def _log_all_grounding_urls(response) -> List[str]:
+    """Log all URLs from grounding metadata for debugging."""
+    all_urls = _extract_urls_from_grounding(response, domain_filter=None)
+    if all_urls:
+        logger.info(f"All grounding URLs ({len(all_urls)}): {all_urls}")
+    else:
+        logger.info("No grounding URLs found in response")
+    return all_urls
+
+
+def _is_youtube_video_url(url: str) -> bool:
+    """Check if a URL is a YouTube video URL (not a channel, playlist, or homepage)."""
+    return bool(re.match(
+        r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]{11}|youtu\.be/[\w-]{11})',
+        url
+    ))
+
+
+async def _firecrawl_search(query: str, limit: int = 5, timeout: int = 30) -> List[Dict[str, Any]]:
+    """
+    Search the web using Firecrawl search API.
+
+    Args:
+        query: Search query string
+        limit: Max number of results
+        timeout: Request timeout in seconds
+
+    Returns:
+        List of search result dicts with 'url', 'title', 'description' keys.
+        Returns empty list on failure.
+    """
+    if not settings.FIRECRAWL_API_KEY:
+        logger.warning("FIRECRAWL_API_KEY not set — cannot use Firecrawl search")
+        return []
+
+    payload = {
+        "query": query,
+        "limit": limit,
+        "scrapeOptions": {
+            "onlyMainContent": False,
+            "formats": []
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(FIRECRAWL_SEARCH_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        logger.info(f"Firecrawl raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+
+        # Firecrawl v2 returns data in two possible formats:
+        # Format A: {"data": [{"url": ..., "title": ...}, ...]}  — flat array
+        # Format B: {"data": {"web": [{"url": ..., "title": ...}, ...], "news": [...], ...}}  — nested by source
+        raw_data = data.get("data", []) if isinstance(data, dict) else data
+
+        # Normalize to a flat list of result dicts
+        results = []
+        if isinstance(raw_data, list):
+            # Format A: data is already a list of results
+            results = raw_data
+        elif isinstance(raw_data, dict):
+            # Format B: data is grouped by source type (web, news, images)
+            # Merge all source arrays, prioritizing "web"
+            for source_key in ("web", "news"):
+                items = raw_data.get(source_key, [])
+                if isinstance(items, list):
+                    results.extend(items)
+            logger.info(f"Firecrawl response format B — sources: {list(raw_data.keys())}")
+
+        if results:
+            logger.info(f"First result: {results[0].get('url', '?')} — {results[0].get('title', '?')}")
+
+        logger.info(f"Firecrawl search returned {len(results)} results for: {query}")
+        return results
+
+    except httpx.TimeoutException:
+        logger.error(f"Firecrawl search timed out after {timeout}s for: {query}")
+        return []
+    except Exception as e:
+        logger.error(f"Firecrawl search failed: {e}")
+        return []
 
 
 # =============================================================================
@@ -164,7 +320,10 @@ async def check_product_cache(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
 @register_function("search_youtube_reviews")
 async def search_youtube_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Search for YouTube review URLs using Gemini with Google Search grounding.
+    Search for YouTube review URLs using Firecrawl search API.
+
+    Uses Firecrawl to perform a real web search, returning verified URLs.
+    Filters results to only include actual YouTube video URLs.
 
     Args:
         db: Database session
@@ -182,71 +341,41 @@ async def search_youtube_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict
     logger.info(f"Searching YouTube reviews for: {product_name}")
 
     try:
-        client = _get_gemini_client()
+        query = f"{product_name} review youtube video site:youtube.com"
+        results = await _firecrawl_search(query, limit=limit * 3, timeout=30)
 
-        prompt = f"""Search for YouTube video reviews of "{product_name}".
+        # Log all URLs for debugging
+        all_urls = [r.get("url", "?") for r in results]
+        logger.info(f"Firecrawl URLs for YouTube search: {all_urls}")
 
-Find {limit} high-quality tech review videos from reputable reviewers.
-
-For each video, provide:
-1. The exact YouTube URL (must be a real, working URL)
-2. The video title
-3. The channel name
-
-Return as JSON:
-{{
-    "videos": [
-        {{
-            "url": "https://www.youtube.com/watch?v=VIDEO_ID",
-            "title": "Video title",
-            "channel": "Channel name"
-        }}
-    ]
-}}
-
-Only include real YouTube video URLs that actually exist."""
-
-        response = await _call_gemini_with_timeout(
-            client,
-            model=settings.LLM_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.3
-            ),
-            timeout=60  # 60 second timeout for search
-        )
-
-        response_text = response.text or ""
-
-        if not response_text:
-            return {
-                "status": "no_results",
-                "urls": [],
-                "product_name": product_name
-            }
-
-        # Parse JSON response
+        # Filter to actual YouTube video URLs
+        video_urls = []
         videos = []
-        urls = []
+        seen = set()
 
-        try:
-            # Try to extract JSON
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                data = json.loads(json_match.group())
-                videos = data.get("videos", [])
-                urls = [v["url"] for v in videos if v.get("url")]
-        except json.JSONDecodeError:
-            # Fallback: extract URLs with regex
-            youtube_pattern = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]+'
-            urls = list(set(re.findall(youtube_pattern, response_text)))
+        for r in results:
+            url = r.get("url", "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
 
-        logger.info(f"Found {len(urls)} YouTube URLs for {product_name}")
+            if _is_youtube_video_url(url):
+                video_urls.append(url)
+                videos.append({
+                    "url": url,
+                    "title": r.get("title", ""),
+                    "description": r.get("description", "")
+                })
+
+            if len(video_urls) >= limit:
+                break
+
+        logger.info(f"Firecrawl returned {len(results)} results, "
+                     f"{len(video_urls)} are YouTube video URLs for {product_name}")
 
         return {
-            "status": "success",
-            "urls": urls[:limit],
+            "status": "success" if video_urls else "no_results",
+            "urls": video_urls[:limit],
             "videos": videos[:limit],
             "product_name": product_name
         }
@@ -285,6 +414,14 @@ async def ingest_youtube_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[
     if not product_name:
         return {"error": "product_name is required"}
 
+    # Validate URL is a real YouTube video URL
+    if not _is_youtube_video_url(video_url):
+        return {
+            "status": "error",
+            "error": f"Invalid YouTube video URL: {video_url}",
+            "url": video_url
+        }
+
     logger.info(f"Ingesting YouTube review: {video_url}")
 
     # Check if already ingested
@@ -301,16 +438,17 @@ async def ingest_youtube_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[
     try:
         client = _get_gemini_client()
 
-        # Ask Gemini to analyze the video
-        prompt = f"""Analyze this YouTube video review: {video_url}
+        # Ask Gemini to analyze the video — emphasis on THIS SPECIFIC video
+        prompt = f"""Go to this exact YouTube video URL and analyze it: {video_url}
 
-This is a review of "{product_name}".
+I need a detailed review analysis of THIS SPECIFIC VIDEO. Do not confuse it with other videos.
+The video should be a review of or related to "{product_name}".
 
-Please provide a detailed review analysis including:
+Please provide:
 
-1. **Video Information**: Title, channel name, and a brief description of the reviewer's style/credibility.
+1. **Video Information**: The exact title of THIS video, the channel name, and a brief description of the reviewer.
 
-2. **Detailed Review Content**: Write a comprehensive summary of what the reviewer says about the product. Include:
+2. **Detailed Review Content**: Write a comprehensive summary of what the reviewer says in THIS video. Include:
    - First impressions and unboxing notes (if mentioned)
    - Design and build quality observations
    - Display/screen analysis
@@ -321,28 +459,30 @@ Please provide a detailed review analysis including:
    - Any unique insights or testing they performed
    - Comparisons to other products (if mentioned)
 
-3. **Pros and Cons**: List the main advantages and disadvantages mentioned.
+3. **Pros and Cons**: List the main advantages and disadvantages mentioned in THIS video.
 
 4. **Final Verdict**: The reviewer's overall conclusion and recommendation.
 
 Be thorough and detailed. Include specific quotes or observations from the reviewer when possible.
 Write at least 3-4 paragraphs for the detailed review content.
 
+IMPORTANT: Only report what is actually said in THIS video at {video_url}. Do not mix in content from other videos.
+
 Return as JSON:
 {{
-    "video_title": "Title of the video",
+    "video_title": "Exact title of this video",
     "channel_name": "Name of the YouTube channel",
     "reviewer_description": "Brief description of the reviewer",
     "detailed_review": "The comprehensive detailed review content (multiple paragraphs)",
     "pros": ["Pro 1", "Pro 2", ...],
     "cons": ["Con 1", "Con 2", ...],
     "verdict": "The reviewer's final verdict",
-    "product_name": "Exact product name mentioned",
+    "product_name": "Exact product name reviewed in this video",
     "product_brand": "Brand name",
     "product_category": "smartphones/laptops/headphones/etc"
 }}"""
 
-        response = await _call_gemini_with_timeout(
+        response = await _call_gemini_with_retry(
             client,
             model=settings.LLM_MODEL,
             contents=prompt,
@@ -351,7 +491,8 @@ Return as JSON:
                 temperature=0.3,
                 max_output_tokens=4096
             ),
-            timeout=120  # 120 second timeout for video analysis
+            timeout=120,  # 120 second timeout for video analysis
+            max_retries=1
         )
 
         response_text = response.text or ""
@@ -471,7 +612,10 @@ Return as JSON:
 @register_function("search_blog_reviews")
 async def search_blog_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Search for blog review URLs using Gemini with Google Search grounding.
+    Search for blog review URLs using Firecrawl search API.
+
+    Uses Firecrawl to perform a real web search, returning verified URLs.
+    Filters results to exclude YouTube and only include blog/article URLs.
 
     Args:
         db: Database session
@@ -489,73 +633,39 @@ async def search_blog_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
     logger.info(f"Searching blog reviews for: {product_name}")
 
     try:
-        client = _get_gemini_client()
+        query = f"{product_name} review from The Verge OR CNET OR TechRadar OR Tom's Guide OR Engadget OR GSMArena OR Android Authority OR Ars Technica OR Wired OR PCMag"
+        results = await _firecrawl_search(query, limit=limit * 3, timeout=30)
 
-        prompt = f"""Search for written tech blog reviews of "{product_name}".
-
-Find {limit} high-quality written reviews from reputable tech publications like:
-- The Verge, CNET, TechRadar, Tom's Guide, Engadget
-- GSMArena, Android Authority, 9to5Mac/Google
-- Ars Technica, Wired, PCMag
-
-For each review, provide:
-1. The exact blog URL (must be a real, working URL)
-2. The article title
-3. The publication name
-
-Return as JSON:
-{{
-    "articles": [
-        {{
-            "url": "https://www.theverge.com/...",
-            "title": "Article title",
-            "publication": "The Verge"
-        }}
-    ]
-}}
-
-Only include real blog URLs that actually exist."""
-
-        response = await _call_gemini_with_timeout(
-            client,
-            model=settings.LLM_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.3
-            ),
-            timeout=60  # 60 second timeout for search
-        )
-
-        response_text = response.text or ""
-
-        if not response_text:
-            return {
-                "status": "no_results",
-                "urls": [],
-                "product_name": product_name
-            }
-
-        # Parse JSON response
+        # Filter out YouTube URLs — we only want blog/article URLs
+        blog_urls = []
         articles = []
-        urls = []
+        seen = set()
 
-        try:
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                data = json.loads(json_match.group())
-                articles = data.get("articles", [])
-                urls = [a["url"] for a in articles if a.get("url")]
-        except json.JSONDecodeError:
-            # Fallback: extract URLs with regex (excluding YouTube)
-            url_pattern = r'https?://(?!(?:www\.)?youtube\.com|youtu\.be)[^\s<>"\']+(?:/[^\s<>"\']*)?'
-            urls = list(set(re.findall(url_pattern, response_text)))
+        for r in results:
+            url = r.get("url", "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
 
-        logger.info(f"Found {len(urls)} blog URLs for {product_name}")
+            if "youtube.com" in url or "youtu.be" in url:
+                continue
+
+            blog_urls.append(url)
+            articles.append({
+                "url": url,
+                "title": r.get("title", ""),
+                "description": r.get("description", "")
+            })
+
+            if len(blog_urls) >= limit:
+                break
+
+        logger.info(f"Firecrawl returned {len(results)} results, "
+                     f"{len(blog_urls)} are blog URLs for {product_name}")
 
         return {
-            "status": "success",
-            "urls": urls[:limit],
+            "status": "success" if blog_urls else "no_results",
+            "urls": blog_urls[:limit],
             "articles": articles[:limit],
             "product_name": product_name
         }
@@ -704,7 +814,7 @@ Return as JSON:
     "product_category": "smartphones/laptops/headphones/etc"
 }}"""
 
-        response = await _call_gemini_with_timeout(
+        response = await _call_gemini_with_retry(
             client,
             model=settings.LLM_MODEL,
             contents=prompt,
@@ -713,7 +823,8 @@ Return as JSON:
                 temperature=0.3,
                 max_output_tokens=4096
             ),
-            timeout=90  # 90 second timeout for blog analysis
+            timeout=90,  # 90 second timeout for blog analysis
+            max_retries=1
         )
 
         response_text = response.text or ""

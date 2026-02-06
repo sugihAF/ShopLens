@@ -30,6 +30,7 @@ services:
       - ./app/api/app:/app/app:ro
       - ./app/api/alembic:/app/alembic:ro
       - ./app/api/alembic.ini:/app/alembic.ini:ro
+      - ./app/api/run_pipeline.py:/app/run_pipeline.py:ro
     # Override entrypoint to use --reload flag
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
