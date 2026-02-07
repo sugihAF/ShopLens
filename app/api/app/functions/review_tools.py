@@ -26,7 +26,7 @@ from google.genai import types
 
 from app.functions.registry import register_function
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import get_logger, log_success, log_detail, log_fail, log_warn
 from app.models.product import Product
 from app.models.reviewer import Reviewer, Platform
 from app.models.review import Review, ReviewType, ProcessingStatus
@@ -133,7 +133,7 @@ def _extract_urls_from_grounding(response, domain_filter: Optional[str] = None) 
                 uri = chunk.web.uri
                 if uri and (domain_filter is None or domain_filter in uri):
                     urls.append(uri)
-        logger.info(f"Grounding chunks: {len(metadata.grounding_chunks)} total, "
+        logger.debug(f"Grounding chunks: {len(metadata.grounding_chunks)} total, "
                      f"{len(urls)} matched filter '{domain_filter}'")
     except (AttributeError, IndexError) as e:
         logger.debug(f"Could not extract grounding URLs: {e}")
@@ -146,9 +146,9 @@ def _log_all_grounding_urls(response) -> List[str]:
     """Log all URLs from grounding metadata for debugging."""
     all_urls = _extract_urls_from_grounding(response, domain_filter=None)
     if all_urls:
-        logger.info(f"All grounding URLs ({len(all_urls)}): {all_urls}")
+        logger.debug(f"All grounding URLs ({len(all_urls)}): {all_urls}")
     else:
-        logger.info("No grounding URLs found in response")
+        logger.debug("No grounding URLs found in response")
     return all_urls
 
 
@@ -196,31 +196,22 @@ async def _firecrawl_search(query: str, limit: int = 5, timeout: int = 30) -> Li
             resp.raise_for_status()
             data = resp.json()
 
-        logger.info(f"Firecrawl raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-
         # Firecrawl v2 returns data in two possible formats:
         # Format A: {"data": [{"url": ..., "title": ...}, ...]}  — flat array
-        # Format B: {"data": {"web": [{"url": ..., "title": ...}, ...], "news": [...], ...}}  — nested by source
+        # Format B: {"data": {"web": [...], "news": [...], ...}}  — nested by source
         raw_data = data.get("data", []) if isinstance(data, dict) else data
 
         # Normalize to a flat list of result dicts
         results = []
         if isinstance(raw_data, list):
-            # Format A: data is already a list of results
             results = raw_data
         elif isinstance(raw_data, dict):
-            # Format B: data is grouped by source type (web, news, images)
-            # Merge all source arrays, prioritizing "web"
             for source_key in ("web", "news"):
                 items = raw_data.get(source_key, [])
                 if isinstance(items, list):
                     results.extend(items)
-            logger.info(f"Firecrawl response format B — sources: {list(raw_data.keys())}")
 
-        if results:
-            logger.info(f"First result: {results[0].get('url', '?')} — {results[0].get('title', '?')}")
-
-        logger.info(f"Firecrawl search returned {len(results)} results for: {query}")
+        logger.debug(f"Firecrawl: {len(results)} results for: {query}")
         return results
 
     except httpx.TimeoutException:
@@ -252,7 +243,7 @@ async def check_product_cache(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
     if not product_name:
         return {"error": "product_name is required"}
 
-    logger.info(f"Checking cache for product: {product_name}")
+    logger.debug(f"Cache lookup: {product_name}")
 
     # Search for product
     search_term = f"%{product_name}%"
@@ -338,15 +329,13 @@ async def search_youtube_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict
     if not product_name:
         return {"error": "product_name is required"}
 
-    logger.info(f"Searching YouTube reviews for: {product_name}")
+    logger.debug(f"YouTube search: {product_name}")
 
     try:
         query = f"{product_name} review youtube video site:youtube.com"
         results = await _firecrawl_search(query, limit=limit * 3, timeout=30)
 
-        # Log all URLs for debugging
-        all_urls = [r.get("url", "?") for r in results]
-        logger.info(f"Firecrawl URLs for YouTube search: {all_urls}")
+        logger.debug(f"Firecrawl raw URLs: {[r.get('url', '?') for r in results]}")
 
         # Filter to actual YouTube video URLs
         video_urls = []
@@ -370,8 +359,7 @@ async def search_youtube_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict
             if len(video_urls) >= limit:
                 break
 
-        logger.info(f"Firecrawl returned {len(results)} results, "
-                     f"{len(video_urls)} are YouTube video URLs for {product_name}")
+        log_detail(logger, f"Firecrawl {len(results)} raw → {len(video_urls)} YouTube URLs")
 
         return {
             "status": "success" if video_urls else "no_results",
@@ -422,7 +410,7 @@ async def ingest_youtube_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[
             "url": video_url
         }
 
-    logger.info(f"Ingesting YouTube review: {video_url}")
+    logger.debug(f"YouTube ingest: {video_url}")
 
     # Check if already ingested
     existing = await db.execute(
@@ -585,7 +573,7 @@ Return as JSON:
         await db.commit()
         await db.refresh(review)
 
-        logger.info(f"Successfully ingested YouTube review: {video_url}")
+        log_detail(logger, f"Ingested: \"{data.get('video_title', '?')}\" by {channel_name}")
 
         return {
             "status": "success",
@@ -630,7 +618,7 @@ async def search_blog_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
     if not product_name:
         return {"error": "product_name is required"}
 
-    logger.info(f"Searching blog reviews for: {product_name}")
+    logger.debug(f"Blog search: {product_name}")
 
     try:
         query = f"{product_name} review from The Verge OR CNET OR TechRadar OR Tom's Guide OR Engadget OR GSMArena OR Android Authority OR Ars Technica OR Wired OR PCMag"
@@ -660,8 +648,7 @@ async def search_blog_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
             if len(blog_urls) >= limit:
                 break
 
-        logger.info(f"Firecrawl returned {len(results)} results, "
-                     f"{len(blog_urls)} are blog URLs for {product_name}")
+        log_detail(logger, f"Firecrawl {len(results)} raw → {len(blog_urls)} blog URLs")
 
         return {
             "status": "success" if blog_urls else "no_results",
@@ -704,7 +691,7 @@ async def ingest_blog_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[str
     if not product_name:
         return {"error": "product_name is required"}
 
-    logger.info(f"Ingesting blog review: {url}")
+    logger.debug(f"Blog ingest: {url}")
 
     # Check if already ingested
     existing = await db.execute(
@@ -733,7 +720,7 @@ async def ingest_blog_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[str
                     content = scrape_result.get("markdown", "")
 
             except Exception as e:
-                logger.warning(f"Firecrawl failed, falling back to Gemini: {e}")
+                log_warn(logger, f"Firecrawl scrape failed, falling back to Gemini: {e}")
 
         client = _get_gemini_client()
 
@@ -916,7 +903,7 @@ Return as JSON:
         await db.commit()
         await db.refresh(review)
 
-        logger.info(f"Successfully ingested blog review: {url}")
+        log_detail(logger, f"Ingested: \"{data.get('article_title', '?')}\" from {publication_name}")
 
         return {
             "status": "success",
@@ -958,7 +945,7 @@ async def get_reviews_summary(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
     if not product_name and not product_id:
         return {"error": "product_name or product_id is required"}
 
-    logger.info(f"Getting reviews summary for: {product_name or product_id}")
+    logger.debug(f"Summary generation: {product_name or product_id}")
 
     # Find product
     if product_id:
@@ -1119,7 +1106,7 @@ Return as JSON:
 @register_function("find_marketplace_listings")
 async def find_marketplace_listings(db: AsyncSession, args: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Search for product listings on Amazon and eBay in real-time.
+    Search for product listings on Amazon and eBay using Firecrawl search API.
 
     Args:
         db: Database session
@@ -1134,97 +1121,63 @@ async def find_marketplace_listings(db: AsyncSession, args: Dict[str, Any]) -> D
     if not product_name:
         return {"error": "product_name is required"}
 
-    logger.info(f"Searching marketplace listings for: {product_name}")
+    logger.debug(f"Marketplace search: {product_name}")
 
     try:
-        client = _get_gemini_client()
+        # Search Amazon and eBay concurrently via Firecrawl
+        amazon_query = f"{product_name} site:amazon.com"
+        ebay_query = f"{product_name} site:ebay.com"
 
-        prompt = f"""Search for where to buy "{product_name}" online.
-
-Find {count_per_marketplace} listings each from:
-1. Amazon (amazon.com)
-2. eBay (ebay.com)
-
-For each listing, provide:
-- The exact product URL
-- The product title
-- The price (if available)
-- The seller/condition info
-
-Return as JSON:
-{{
-    "amazon": [
-        {{
-            "url": "https://www.amazon.com/...",
-            "title": "Product title",
-            "price": "$XXX.XX",
-            "seller": "Seller info"
-        }}
-    ],
-    "ebay": [
-        {{
-            "url": "https://www.ebay.com/...",
-            "title": "Product title",
-            "price": "$XXX.XX",
-            "condition": "New/Used"
-        }}
-    ]
-}}
-
-Only include real, working URLs."""
-
-        response = await _call_gemini_with_timeout(
-            client,
-            model=settings.LLM_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.3
-            ),
-            timeout=60  # 60 second timeout for marketplace search
+        amazon_results, ebay_results = await asyncio.gather(
+            _firecrawl_search(amazon_query, limit=count_per_marketplace * 2, timeout=30),
+            _firecrawl_search(ebay_query, limit=count_per_marketplace * 2, timeout=30),
         )
 
-        response_text = response.text or ""
+        # Filter and format Amazon results
+        amazon_listings = []
+        for r in amazon_results:
+            url = r.get("url", "")
+            if "amazon.com" not in url:
+                continue
+            amazon_listings.append({
+                "url": url,
+                "title": r.get("title", ""),
+                "price": "",
+                "seller": r.get("description", "")[:120] if r.get("description") else "",
+            })
+            if len(amazon_listings) >= count_per_marketplace:
+                break
 
-        if not response_text:
+        # Filter and format eBay results
+        ebay_listings = []
+        for r in ebay_results:
+            url = r.get("url", "")
+            if "ebay.com" not in url:
+                continue
+            ebay_listings.append({
+                "url": url,
+                "title": r.get("title", ""),
+                "price": "",
+                "condition": r.get("description", "")[:120] if r.get("description") else "",
+            })
+            if len(ebay_listings) >= count_per_marketplace:
+                break
+
+        if not amazon_listings and not ebay_listings:
             return {
                 "status": "no_results",
                 "message": "Could not find marketplace listings",
-                "product_name": product_name
+                "product_name": product_name,
             }
 
-        # Parse response
-        try:
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                data = json.loads(json_match.group())
-            else:
-                raise ValueError("No JSON found")
-
-        except (json.JSONDecodeError, ValueError):
-            # Fallback: extract URLs
-            amazon_urls = re.findall(r'https?://(?:www\.)?amazon\.com[^\s<>"\']+', response_text)
-            ebay_urls = re.findall(r'https?://(?:www\.)?ebay\.com[^\s<>"\']+', response_text)
-
-            return {
-                "status": "partial",
-                "amazon": [{"url": u} for u in amazon_urls[:count_per_marketplace]],
-                "ebay": [{"url": u} for u in ebay_urls[:count_per_marketplace]],
-                "product_name": product_name
-            }
+        status = "success" if amazon_listings and ebay_listings else "partial"
+        logger.info(f"Marketplace: {len(amazon_listings)} Amazon + {len(ebay_listings)} eBay listings for {product_name}")
 
         return {
-            "status": "success",
-            "amazon": data.get("amazon", [])[:count_per_marketplace],
-            "ebay": data.get("ebay", [])[:count_per_marketplace],
-            "product_name": product_name
+            "status": status,
+            "amazon": amazon_listings,
+            "ebay": ebay_listings,
+            "product_name": product_name,
         }
 
     except Exception as e:
@@ -1232,7 +1185,7 @@ Only include real, working URLs."""
         return {
             "status": "error",
             "error": str(e),
-            "product_name": product_name
+            "product_name": product_name,
         }
 
 
@@ -1265,7 +1218,7 @@ async def _get_or_create_product(
     db.add(product)
     await db.flush()
 
-    logger.info(f"Created new product: {name} (ID: {product.id})")
+    log_detail(logger, f"DB: new product \"{name}\" (id={product.id})")
     return product
 
 
@@ -1297,7 +1250,7 @@ async def _get_or_create_reviewer(
     db.add(reviewer)
     await db.flush()
 
-    logger.info(f"Created new reviewer: {name} (ID: {reviewer.id})")
+    log_detail(logger, f"DB: new reviewer \"{name}\" (id={reviewer.id})")
     return reviewer
 
 

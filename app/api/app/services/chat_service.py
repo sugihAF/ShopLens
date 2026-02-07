@@ -11,7 +11,10 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import (
+    get_logger, log_header, log_success, log_fail, log_detail, elapsed_str,
+    BOLD, CYAN, DIM, GREEN, YELLOW, MAGENTA, RESET, LINE,
+)
 from app.crud.conversation import conversation_crud
 from app.schemas.chat import (
     ChatRequest,
@@ -209,6 +212,10 @@ class ChatService:
         start_time = time.time()
         functions_called = []
         function_results = []  # Store function results for attachment extraction
+        fn_step = 0
+
+        logger.info(f"{LINE}")
+        logger.info(f"{BOLD}{MAGENTA}Chat{RESET} │ {request.message[:80]}")
 
         # Get or create conversation
         conversation = None
@@ -270,8 +277,14 @@ class ChatService:
                 function_name = function_call.name
                 function_args = dict(function_call.args) if function_call.args else {}
                 functions_called.append(function_name)
+                fn_step += 1
+                fn_start = time.time()
 
-                logger.info(f"Calling function: {function_name} with args: {function_args}")
+                # Pretty-print args
+                short_args = ", ".join(
+                    f"{k}={repr(v)[:40]}" for k, v in function_args.items()
+                )
+                logger.info(f"{BOLD}{CYAN}[fn {fn_step}]{RESET} {function_name}({short_args})")
 
                 # Execute the function
                 function_result = await execute_function(
@@ -279,6 +292,26 @@ class ChatService:
                     function_name,
                     function_args
                 )
+
+                # Log function result summary
+                fn_elapsed = elapsed_str(fn_start)
+                status = function_result.get("status", "")
+                err = function_result.get("error", "")
+                if err:
+                    logger.info(f"  {YELLOW}⚠{RESET} {err} {fn_elapsed}")
+                elif status in ("success", "found"):
+                    # Build a concise result summary
+                    summary_parts = []
+                    for key in ("total_reviews", "urls", "videos", "articles", "amazon", "ebay", "reviews"):
+                        val = function_result.get(key)
+                        if isinstance(val, list) and val:
+                            summary_parts.append(f"{len(val)} {key}")
+                        elif isinstance(val, (int, float)) and val:
+                            summary_parts.append(f"{key}={val}")
+                    detail = ", ".join(summary_parts) if summary_parts else status
+                    logger.info(f"  {GREEN}✓{RESET} {detail} {fn_elapsed}")
+                else:
+                    logger.info(f"  {DIM}→ {status or 'done'}{RESET} {fn_elapsed}")
 
                 # Store function result for attachment extraction
                 function_results.append({
@@ -329,6 +362,16 @@ class ChatService:
 
             # Extract final text response
             final_response = self._extract_text(response)
+
+            total_elapsed = elapsed_str(start_time)
+            if functions_called:
+                logger.info(f"{LINE}")
+                logger.info(
+                    f"{BOLD}Done{RESET} │ {len(functions_called)} function(s): "
+                    f"{', '.join(functions_called)} {total_elapsed}"
+                )
+            else:
+                logger.info(f"{DIM}  text-only response{RESET} {total_elapsed}")
 
             # Log warning if no functions were called for a product question
             if not functions_called and self._looks_like_product_question(request.message):

@@ -218,36 +218,206 @@ body {
   }
 }
 
-/* Features Grid */
-.features-grid {
+/* ============================================
+   FEATURES SECTION — Firecrawl-inspired cards
+   ============================================ */
+
+/* Section wrapper */
+.feat-section {
+  position: relative;
+  padding: 6rem 0;
+}
+
+/* 2-column grid */
+.feat-grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 1.25rem;
 }
 
 @media (min-width: 768px) {
-  .features-grid {
+  .feat-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 }
 
-@media (min-width: 1024px) {
-  .features-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
+/* ---- Card base ---- */
+.feat-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  transition: border-color 0.4s var(--ease-out-expo), box-shadow 0.4s var(--ease-out-expo), transform 0.4s var(--ease-out-expo);
 }
 
-.feature-card-large {
+.feat-card:hover {
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  transform: translateY(-2px);
+}
+
+/* Full-width hero card */
+.feat-card--full {
   grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 1.75rem;
-  align-items: center;
 }
 
 @media (min-width: 768px) {
-  .feature-card-large {
-    grid-template-columns: 1fr 1fr;
+  .feat-card--full {
+    flex-direction: row;
+  }
+}
+
+/* ---- Hover accent bar (top edge) ---- */
+.feat-card-accent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--color-accent-primary), transparent);
+  opacity: 0;
+  transition: opacity 0.4s var(--ease-out-expo);
+}
+
+.feat-card:hover .feat-card-accent {
+  opacity: 0.6;
+}
+
+/* ---- Content area (text side) ---- */
+.feat-card-content {
+  padding: 2rem 2rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (min-width: 768px) {
+  .feat-card-content--full {
+    flex: 1;
+    padding: 2.5rem;
+    justify-content: center;
+  }
+}
+
+/* Category label (icon + text) */
+.feat-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.feat-category-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-accent-primary);
+  opacity: 0.7;
+}
+
+/* Description: bold headline + muted text combined */
+.feat-description {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.feat-headline {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.feat-desc-text {
+  color: var(--color-text-tertiary);
+}
+
+/* ---- Visual area ---- */
+.feat-card-visual {
+  padding: 0 1.5rem 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .feat-card-visual--full {
+    flex: 1;
+    padding: 1.5rem 2rem 1.5rem 0;
+    display: flex;
+    align-items: center;
+  }
+}
+
+/* Visual container (inner rounded box) */
+.feat-visual-container {
+  background: var(--color-bg-tertiary);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  width: 100%;
+}
+
+/* ---- Chat bubble visuals ---- */
+.feat-bubble {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.feat-bubble--user {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.12);
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.feat-bubble--ai {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--color-text-tertiary);
+}
+
+/* ---- Mini card (used inside visual mockups) ---- */
+.feat-mini-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+}
+
+/* ---- Responsive: tablet/phone ---- */
+@media (max-width: 767px) {
+  .feat-card-content {
+    padding: 1.5rem 1.5rem 1rem;
+  }
+  .feat-card-visual {
+    padding: 0 1.25rem 1.25rem;
+  }
+  .feat-card--full {
+    flex-direction: column;
+  }
+  .feat-description {
+    font-size: 0.9rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .feat-card-content {
+    padding: 1.25rem 1.25rem 0.75rem;
+  }
+  .feat-card-visual {
+    padding: 0 1rem 1rem;
+  }
+  .feat-visual-container {
+    padding: 1rem;
+  }
+  .feat-description {
+    font-size: 0.85rem;
   }
 }
 
@@ -315,13 +485,9 @@ body {
   margin-bottom: 4rem;
 }
 
-/* Feature Card */
+/* Feature Card (legacy) */
 .feature-card {
   display: block;
-}
-
-.feature-card.feature-card-large {
-  grid-column: 1 / -1;
 }
 
 /* Navigation */

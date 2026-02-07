@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import get_logger, setup_logging
 from app.api.v1.router import api_router
 from app.db.session import engine
 from app.db.base import Base
@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
     # Startup
+    setup_logging()
     logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}")
     logger.info(f"Debug mode: {settings.DEBUG}")
 

@@ -11,6 +11,7 @@ services:
       dockerfile: Dockerfile
     container_name: shoplens-api-dev
     restart: unless-stopped
+    tty: true
     ports:
       - "8000:8000"
     environment:
@@ -24,6 +25,7 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-models/text-embedding-004}
       - ENVIRONMENT=development
       - DEBUG=true
+      - FORCE_COLOR=1
       - CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost:8080
     volumes:
       # Mount source code for hot reload

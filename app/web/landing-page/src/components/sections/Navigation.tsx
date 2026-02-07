@@ -5,9 +5,9 @@ import { Button, LogoIcon, ArrowRightIcon, MenuIcon, CloseIcon } from '@/compone
 import { cn } from '@/lib/utils'
 
 const navLinks = [
+  { href: '#demo', label: 'Demo' },
   { href: '#features', label: 'Features' },
   { href: '#how-it-works', label: 'How it Works' },
-  { href: '#demo', label: 'Demo' },
 ]
 
 export function Navigation() {
@@ -18,7 +18,7 @@ export function Navigation() {
     setIsMobileMenuOpen(false)
     const target = document.querySelector(href)
     if (target) {
-      const offsetTop = target.getBoundingClientRect().top + window.scrollY - 80
+      const offsetTop = target.getBoundingClientRect().top + window.scrollY - 64
       window.scrollTo({ top: offsetTop, behavior: 'smooth' })
     }
   }

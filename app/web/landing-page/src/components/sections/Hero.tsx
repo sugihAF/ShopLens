@@ -34,7 +34,7 @@ export function Hero() {
   const scrollToDemo = () => {
     const demo = document.querySelector('#demo')
     if (demo) {
-      const offsetTop = demo.getBoundingClientRect().top + window.scrollY - 80
+      const offsetTop = demo.getBoundingClientRect().top + window.scrollY - 64
       window.scrollTo({ top: offsetTop, behavior: 'smooth' })
     }
   }
@@ -169,7 +169,7 @@ export function Hero() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.8 }}
-        className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3"
+        className="absolute bottom-8 inset-x-0 flex flex-col items-center gap-3"
       >
         <span className="text-xs font-medium tracking-widest uppercase text-[var(--color-text-muted)]">
           Explore
