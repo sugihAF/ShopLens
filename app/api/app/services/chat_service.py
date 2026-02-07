@@ -586,7 +586,7 @@ class ChatService:
                         "reviewer_name": summary.get("reviewer_name", "Unknown"),
                         "review_url": summary.get("url", ""),
                         "review_type": "video" if platform == "youtube" else "blog",
-                        "summary": summary.get("summary", "")[:300],  # Truncate for card
+                        "summary": summary.get("summary", ""),
                         "rating": None,  # No ratings in new flow
                         "pros": result.get("common_pros", [])[:3],
                         "cons": result.get("common_cons", [])[:3],

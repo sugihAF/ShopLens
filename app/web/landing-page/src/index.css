@@ -1511,6 +1511,7 @@ body {
 .max-w-\[360px\] { max-width: 360px; }
 .max-w-\[440px\] { max-width: 440px; }
 .max-w-\[480px\] { max-width: 480px; }
+.max-w-2xl { max-width: 42rem; }
 .max-w-3xl { max-width: 48rem; }
 .max-w-md { max-width: 28rem; }
 .max-w-xl { max-width: 36rem; }
@@ -1534,6 +1535,23 @@ body {
 .border-t { border-top-width: 1px; }
 .border-b { border-bottom-width: 1px; }
 .border-y { border-top-width: 1px; border-bottom-width: 1px; }
+
+/* Review detail modal responsive */
+@media (max-width: 640px) {
+  .review-detail-modal {
+    max-height: 95vh !important;
+    width: calc(100% - 1rem) !important;
+  }
+  .review-detail-modal > div:first-of-type {
+    padding: 20px 20px 18px !important;
+  }
+  .review-detail-modal > div:nth-child(2) {
+    padding: 24px 20px !important;
+  }
+  .review-detail-modal > div:last-child {
+    padding: 16px 20px !important;
+  }
+}
 
 /* Order for flexbox/grid */
 .order-first { order: -9999; }

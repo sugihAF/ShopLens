@@ -109,8 +109,257 @@ function ExternalLinkIcon({ className }: { className?: string }) {
   )
 }
 
+// Chevron icon for "View Details"
+function ChevronRightIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  )
+}
+
+// Check icon for pros
+function CheckCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  )
+}
+
+// X icon for cons
+function XCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+      <line x1="9" y1="9" x2="15" y2="15" />
+    </svg>
+  )
+}
+
+// Review detail modal component
+function ReviewDetailModal({ card, onClose }: { card: ReviewerCard; onClose: () => void }) {
+  const isVideo = card.review_type === 'video'
+  const hasPros = card.pros && card.pros.length > 0
+  const hasCons = card.cons && card.cons.length > 0
+
+  // Close on escape key
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleEsc)
+    return () => document.removeEventListener('keydown', handleEsc)
+  }, [onClose])
+
+  // Lock body scroll when modal is open
+  useEffect(() => {
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = '' }
+  }, [])
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      onClick={onClose}
+    >
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/75 backdrop-blur-md" />
+
+      {/* Modal */}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 24 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 24 }}
+        transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+        onClick={(e) => e.stopPropagation()}
+        className="review-detail-modal relative w-[calc(100%-2rem)] max-w-[680px] max-h-[90vh] flex flex-col rounded-2xl overflow-hidden"
+        style={{
+          background: 'var(--color-bg-secondary)',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          boxShadow: '0 0 0 1px rgba(255,255,255,0.03), 0 0 100px rgba(245, 158, 11, 0.06), 0 32px 80px rgba(0, 0, 0, 0.7)',
+        }}
+      >
+        {/* ── Header ── */}
+        <div className="relative flex-shrink-0" style={{ padding: '28px 32px 24px', background: 'var(--color-bg-tertiary)', borderBottom: '1px solid var(--color-glass-border)' }}>
+          {/* Close */}
+          <button
+            onClick={onClose}
+            className="absolute top-5 right-5 w-9 h-9 flex items-center justify-center rounded-full text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[rgba(255,255,255,0.06)] transition-all duration-200"
+          >
+            <CloseIcon className="w-4 h-4" />
+          </button>
+
+          <div className="flex items-center gap-5">
+            {/* Avatar */}
+            <div
+              className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold flex-shrink-0"
+              style={{
+                background: 'linear-gradient(135deg, var(--color-accent-tertiary), var(--color-accent-primary))',
+                color: 'var(--color-bg-primary)',
+                boxShadow: '0 4px 20px rgba(245, 158, 11, 0.25)',
+              }}
+            >
+              {card.reviewer_name.charAt(0).toUpperCase()}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <h3 style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--color-text-primary)', lineHeight: 1.3 }}>
+                {card.reviewer_name}
+              </h3>
+              <div className="flex items-center gap-3" style={{ marginTop: '8px' }}>
+                <span
+                  className="inline-flex items-center gap-1.5 text-xs font-medium rounded-full"
+                  style={{
+                    padding: '4px 12px',
+                    background: isVideo ? 'rgba(239,68,68,0.12)' : 'rgba(59,130,246,0.12)',
+                    color: isVideo ? '#f87171' : '#60a5fa',
+                  }}
+                >
+                  {isVideo ? (
+                    <><PlayIcon className="w-3 h-3" /> YouTube</>
+                  ) : (
+                    <><ExternalLinkIcon className="w-3 h-3" /> Blog</>
+                  )}
+                </span>
+                {card.rating && (
+                  <span className="flex items-center gap-1 text-sm">
+                    <span className="font-bold" style={{ color: 'var(--color-accent-primary)' }}>{card.rating}</span>
+                    <span style={{ color: 'var(--color-text-muted)', fontSize: '0.75rem' }}>/10</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Scrollable body ── */}
+        <div className="flex-1 overflow-y-auto" style={{ padding: '32px' }}>
+          {/* Summary */}
+          <div style={{ marginBottom: (hasPros || hasCons) ? '32px' : '0' }}>
+            <div className="flex items-center gap-2" style={{ marginBottom: '14px' }}>
+              <div style={{ width: '3px', height: '14px', borderRadius: '2px', background: 'var(--color-accent-primary)', opacity: 0.7 }} />
+              <h4 style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-text-muted)' }}>
+                Review Summary
+              </h4>
+            </div>
+            <p style={{ fontSize: '0.9rem', lineHeight: 1.85, color: 'var(--color-text-secondary)' }}>
+              {card.summary || 'No summary available'}
+            </p>
+          </div>
+
+          {/* Pros & Cons */}
+          {(hasPros || hasCons) && (
+            <div style={{ display: 'grid', gridTemplateColumns: (hasPros && hasCons) ? '1fr 1fr' : '1fr', gap: '16px' }}>
+              {hasPros && (
+                <div
+                  style={{
+                    padding: '20px 22px',
+                    borderRadius: '14px',
+                    background: 'rgba(52, 211, 153, 0.04)',
+                    border: '1px solid rgba(52, 211, 153, 0.10)',
+                  }}
+                >
+                  <div className="flex items-center gap-2" style={{ marginBottom: '16px' }}>
+                    <CheckCircleIcon className="w-4 h-4" style={{ color: '#6ee7b7' }} />
+                    <h4 style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#6ee7b7' }}>
+                      Pros
+                    </h4>
+                  </div>
+                  <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {card.pros.map((pro, i) => (
+                      <li key={i} className="flex items-start gap-3" style={{ fontSize: '0.85rem', lineHeight: 1.65, color: 'var(--color-text-secondary)' }}>
+                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(110, 231, 183, 0.5)', marginTop: '7px', flexShrink: 0 }} />
+                        <span>{pro}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {hasCons && (
+                <div
+                  style={{
+                    padding: '20px 22px',
+                    borderRadius: '14px',
+                    background: 'rgba(251, 113, 133, 0.04)',
+                    border: '1px solid rgba(251, 113, 133, 0.10)',
+                  }}
+                >
+                  <div className="flex items-center gap-2" style={{ marginBottom: '16px' }}>
+                    <XCircleIcon className="w-4 h-4" style={{ color: '#fda4af' }} />
+                    <h4 style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#fda4af' }}>
+                      Cons
+                    </h4>
+                  </div>
+                  <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {card.cons.map((con, i) => (
+                      <li key={i} className="flex items-start gap-3" style={{ fontSize: '0.85rem', lineHeight: 1.65, color: 'var(--color-text-secondary)' }}>
+                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'rgba(253, 164, 175, 0.5)', marginTop: '7px', flexShrink: 0 }} />
+                        <span>{con}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Footer ── */}
+        {card.review_url && (
+          <div className="flex-shrink-0" style={{ padding: '20px 32px', borderTop: '1px solid var(--color-glass-border)', background: 'var(--color-bg-tertiary)' }}>
+            <a
+              href={card.review_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-3 w-full transition-all duration-200"
+              style={{
+                padding: '14px 20px',
+                borderRadius: '14px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                background: 'var(--color-bg-primary)',
+                border: '1px solid var(--color-glass-border)',
+                color: 'var(--color-text-secondary)',
+                textDecoration: 'none',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'
+                e.currentTarget.style.color = 'var(--color-accent-primary)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--color-glass-border)'
+                e.currentTarget.style.color = 'var(--color-text-secondary)'
+              }}
+            >
+              {isVideo ? (
+                <>
+                  <PlayIcon className="w-4 h-4" style={{ color: '#f87171' }} />
+                  <span>Watch Full Review on YouTube</span>
+                </>
+              ) : (
+                <>
+                  <ExternalLinkIcon className="w-4 h-4" />
+                  <span>Read Full Review</span>
+                </>
+              )}
+            </a>
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
+  )
+}
+
 // Single reviewer card component
-function ReviewerCardItem({ card, index }: { card: ReviewerCard; index: number }) {
+function ReviewerCardItem({ card, index, onClick }: { card: ReviewerCard; index: number; onClick: () => void }) {
   const isVideo = card.review_type === 'video'
 
   return (
@@ -118,7 +367,8 @@ function ReviewerCardItem({ card, index }: { card: ReviewerCard; index: number }
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: index * 0.1, ease: [0.16, 1, 0.3, 1] }}
-      className="bg-[var(--color-bg-secondary)] border border-[var(--color-glass-border)] rounded-xl overflow-hidden hover:border-[var(--color-accent-primary)]/30 transition-all duration-300 group"
+      onClick={onClick}
+      className="bg-[var(--color-bg-secondary)] border border-[var(--color-glass-border)] rounded-xl overflow-hidden hover:border-[var(--color-accent-primary)]/30 transition-all duration-300 group cursor-pointer"
     >
       {/* Header with reviewer name and badge */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-glass-border)] bg-[var(--color-bg-tertiary)]">
@@ -154,13 +404,14 @@ function ReviewerCardItem({ card, index }: { card: ReviewerCard; index: number }
         </p>
       </div>
 
-      {/* Link to review */}
-      {card.review_url && (
-        <div className="px-4 pb-3">
+      {/* Footer row: source link + view details hint */}
+      <div className="px-4 pb-3 flex items-center justify-between gap-2">
+        {card.review_url && (
           <a
             href={card.review_url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
             className="inline-flex items-center gap-2 px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-glass-border)] rounded-lg text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:border-[var(--color-accent-primary)]/30 transition-all duration-200 group-hover:bg-[var(--color-bg-primary)]"
           >
             {isVideo ? (
@@ -175,37 +426,60 @@ function ReviewerCardItem({ card, index }: { card: ReviewerCard; index: number }
               </>
             )}
           </a>
-        </div>
-      )}
+        )}
+        <span className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] group-hover:text-[var(--color-accent-primary)] transition-colors duration-200">
+          Details
+          <ChevronRightIcon className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
+        </span>
+      </div>
     </motion.div>
   )
 }
 
 // Reviewer cards grid component
 function ReviewerCards({ cards }: { cards: ReviewerCard[]; productName?: string }) {
+  const [selectedCard, setSelectedCard] = useState<ReviewerCard | null>(null)
+
   if (!cards || cards.length === 0) return null
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, delay: 0.2 }}
-      className="mt-4"
-    >
-      <div className="flex items-center gap-2 mb-3">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-          Expert Reviews
-        </h3>
-        <span className="text-xs text-[var(--color-text-muted)]">
-          ({cards.length} sources)
-        </span>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {cards.map((card, index) => (
-          <ReviewerCardItem key={`${card.reviewer_name}-${index}`} card={card} index={index} />
-        ))}
-      </div>
-    </motion.div>
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.2 }}
+        className="mt-4"
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+            Expert Reviews
+          </h3>
+          <span className="text-xs text-[var(--color-text-muted)]">
+            ({cards.length} sources)
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {cards.map((card, index) => (
+            <ReviewerCardItem
+              key={`${card.reviewer_name}-${index}`}
+              card={card}
+              index={index}
+              onClick={() => setSelectedCard(card)}
+            />
+          ))}
+        </div>
+      </motion.div>
+
+      {/* Detail modal */}
+      <AnimatePresence>
+        {selectedCard && (
+          <ReviewDetailModal
+            card={selectedCard}
+            onClose={() => setSelectedCard(null)}
+          />
+        )}
+      </AnimatePresence>
+    </>
   )
 }
 
@@ -240,6 +514,7 @@ function MessageBubble({ message, isTyping }: { message: ChatMessage; isTyping?:
       initial={{ opacity: 0, y: 16, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+      style={{ marginBottom: '1.5rem' }}
       className={`flex gap-4 ${isUser ? 'justify-end' : 'items-start flex-col'}`}
     >
       <div className={`flex gap-4 ${isUser ? 'justify-end' : 'items-start'} w-full`}>
@@ -590,7 +865,7 @@ export function ChatPage() {
           {messages.length === 0 && !isLoading ? (
             <WelcomeScreen onSuggestionClick={handleSuggestionClick} />
           ) : (
-            <div className="max-w-3xl mx-auto px-4 md:px-6 py-8 space-y-6">
+            <div className="max-w-3xl mx-auto px-4 md:px-6 py-8 pb-16">
               <AnimatePresence mode="popLayout">
                 {messages.map((message) => (
                   <MessageBubble key={message.id} message={message} />
@@ -615,7 +890,7 @@ export function ChatPage() {
         {/* Input area */}
         <div className="border-t border-[var(--color-glass-border)] bg-[var(--color-bg-primary)]/80 backdrop-blur-xl">
           <form onSubmit={handleSubmit} className="max-w-3xl mx-auto px-4 md:px-6 py-4">
-            <div className="relative flex items-end gap-3 p-2 bg-[var(--color-bg-secondary)] border border-[var(--color-glass-border)] rounded-2xl transition-all duration-200 focus-within:border-[var(--color-accent-primary)]/50 focus-within:shadow-[0_0_0_4px_rgba(245,158,11,0.1)]">
+            <div className="relative flex items-end gap-3 p-2 bg-[var(--color-bg-secondary)] border border-[var(--color-glass-border)] rounded-2xl transition-all duration-200">
               <textarea
                 ref={inputRef}
                 value={input}
@@ -624,8 +899,8 @@ export function ChatPage() {
                 placeholder="Ask about any tech product..."
                 disabled={isLoading}
                 rows={1}
-                className="flex-1 px-4 py-3 bg-transparent text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] resize-none focus:outline-none disabled:opacity-50 text-[15px] leading-relaxed"
-                style={{ maxHeight: '200px' }}
+                className="flex-1 px-4 py-3 bg-transparent text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] resize-none disabled:opacity-50 text-[15px] leading-relaxed"
+                style={{ maxHeight: '200px', outline: 'none' }}
               />
               <button
                 type="submit"
