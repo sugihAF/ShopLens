@@ -8,20 +8,26 @@ services:
       dockerfile: Dockerfile
     container_name: shoplens-api
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://shoplens:shoplens@postgres:5432/shoplens
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-shoplens}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-shoplens}
       - REDIS_URL=redis://redis:6379/0
-      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
       - SECRET_KEY=${SECRET_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
       - LLM_MODEL=${LLM_MODEL:-gemini-3-flash-preview}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.2}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-models/text-embedding-004}
-      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - RATE_LIMIT_CHAT=${RATE_LIMIT_CHAT:-10/minute}
+      - RATE_LIMIT_AUTH=${RATE_LIMIT_AUTH:-5/minute}
+      - ENVIRONMENT=production
       - DEBUG=false
-      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+      - CORS_ORIGINS=https://${DOMAIN}
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,7 +54,7 @@ services:
     container_name: shoplens-web
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "80:80"
     depends_on:
       - api
     healthcheck:
@@ -67,11 +73,11 @@ services:
     image: postgres:15-alpine
     container_name: shoplens-postgres
     restart: unless-stopped
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-shoplens}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-shoplens}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB:-shoplens}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -91,9 +97,9 @@ services:
     image: redis:7-alpine
     container_name: shoplens-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    expose:
+      - "6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-}
     volumes:
       - redis_data:/data
     healthcheck:
@@ -112,9 +118,9 @@ services:
     image: qdrant/qdrant:latest
     container_name: shoplens-qdrant
     restart: unless-stopped
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    expose:
+      - "6333"
+      - "6334"
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
