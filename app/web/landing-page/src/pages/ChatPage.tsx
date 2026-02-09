@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChat } from '@/hooks'
 import { formatMarkdown } from '@/lib/utils'
 import { LogoIcon, SendIcon } from '@/components/ui'
-import type { ChatMessage, ReviewerCard, Attachment } from '@/types'
+import type { ChatMessage, ReviewerCard, Attachment, ProgressStep } from '@/types'
 
 // Icons
 function ArrowLeftIcon({ className }: { className?: string }) {
@@ -68,6 +68,68 @@ function TypingIndicator() {
           }}
         />
       ))}
+    </div>
+  )
+}
+
+// Progress steps component for streaming progress
+function ProgressSteps({ steps }: { steps: ProgressStep[] }) {
+  const doneCount = steps.filter((s) => s.status === 'done').length
+  const total = steps.length
+
+  return (
+    <div className="mt-3 space-y-2">
+      {steps.map((step) => (
+        <div key={step.step} className="flex items-center gap-2.5">
+          {step.status === 'done' ? (
+            <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <motion.svg
+              className="w-4 h-4 text-amber-400 flex-shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+            >
+              <path d="M12 2a10 10 0 0 1 10 10" />
+            </motion.svg>
+          )}
+          <span
+            className={`text-sm ${
+              step.status === 'done'
+                ? 'text-[var(--color-text-muted)]'
+                : 'text-[var(--color-text-secondary)]'
+            }`}
+          >
+            {step.label}{step.status === 'running' ? '...' : ''}
+          </span>
+        </div>
+      ))}
+
+      {/* Progress bar */}
+      {total > 1 && (
+        <div className="flex items-center gap-2.5 pt-1">
+          <div className="flex-1 h-1.5 bg-[var(--color-bg-primary)] rounded-full overflow-hidden">
+            <motion.div
+              className="h-full rounded-full"
+              style={{
+                background: 'linear-gradient(90deg, var(--color-accent-tertiary), var(--color-accent-primary))',
+              }}
+              initial={{ width: 0 }}
+              animate={{ width: `${(doneCount / total) * 100}%` }}
+              transition={{ duration: 0.4, ease: 'easeOut' }}
+            />
+          </div>
+          <span className="text-xs text-[var(--color-text-muted)] tabular-nums">
+            {doneCount}/{total}
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -505,7 +567,7 @@ function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
 }
 
 // Message bubble component
-function MessageBubble({ message, isTyping }: { message: ChatMessage; isTyping?: boolean }) {
+function MessageBubble({ message, isTyping, progressSteps }: { message: ChatMessage; isTyping?: boolean; progressSteps?: ProgressStep[] }) {
   const isUser = message.role === 'user'
   const hasAttachments = !isUser && message.attachments && message.attachments.length > 0
 
@@ -527,7 +589,12 @@ function MessageBubble({ message, isTyping }: { message: ChatMessage; isTyping?:
           }`}
         >
           {isTyping ? (
-            <TypingIndicator />
+            <>
+              <TypingIndicator />
+              {progressSteps && progressSteps.length > 0 && (
+                <ProgressSteps steps={progressSteps} />
+              )}
+            </>
           ) : (
             <div
               className="text-[15px] leading-relaxed [&_strong]:text-[var(--color-text-primary)] [&_strong]:font-semibold [&_ul]:mt-3 [&_ul]:space-y-1.5 [&_li]:flex [&_li]:items-start [&_li]:gap-2 [&_p]:mb-2 [&_p:last-child]:mb-0"
@@ -739,7 +806,7 @@ export function ChatPage() {
   const [searchParams] = useSearchParams()
   const [input, setInput] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const { messages, sendMessage, clearChat, isLoading } = useChat()
+  const { messages, sendMessage, clearChat, isLoading, progressSteps } = useChat()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const initialQuerySentRef = useRef(false)
@@ -879,6 +946,7 @@ export function ChatPage() {
                       timestamp: new Date(),
                     }}
                     isTyping
+                    progressSteps={progressSteps}
                   />
                 )}
               </AnimatePresence>

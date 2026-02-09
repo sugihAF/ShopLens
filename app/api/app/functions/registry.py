@@ -101,6 +101,30 @@ FUNCTION_DECLARATIONS = [
         }
     },
     {
+        "name": "ingest_reviews_batch",
+        "description": "Ingest multiple YouTube and blog reviews in parallel. Much faster than calling ingest_youtube_review and ingest_blog_review individually. Pass all URLs at once and they will be processed concurrently.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product being reviewed"
+                },
+                "youtube_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of YouTube video URLs to ingest"
+                },
+                "blog_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of blog review URLs to ingest"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
         "name": "get_reviews_summary",
         "description": "Generate per-reviewer summaries and an overall product summary from stored reviews. Use this AFTER reviews have been ingested to present the final summary to the user.",
         "parameters": {

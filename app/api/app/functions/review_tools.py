@@ -27,9 +27,13 @@ from google.genai import types
 from app.functions.registry import register_function
 from app.core.config import settings
 from app.core.logging import get_logger, log_success, log_detail, log_fail, log_warn
+from app.core.circuit_breaker import gemini_breaker
+from app.services.cache_service import cache
 from app.models.product import Product
 from app.models.reviewer import Reviewer, Platform
 from app.models.review import Review, ReviewType, ProcessingStatus
+from app.db.session import AsyncSessionLocal
+from app.services.embedding_service import embedding_service
 
 logger = get_logger(__name__)
 
@@ -81,7 +85,7 @@ async def _call_gemini_with_timeout(client, model: str, contents, config, timeou
 
 async def _call_gemini_with_retry(client, model: str, contents, config, timeout: int = GEMINI_TIMEOUT, max_retries: int = 1):
     """
-    Call Gemini API with timeout and retry on failure.
+    Call Gemini API with timeout, retry on failure, and circuit breaker protection.
 
     Args:
         client: Gemini client instance
@@ -94,14 +98,20 @@ async def _call_gemini_with_retry(client, model: str, contents, config, timeout:
     Returns:
         Gemini API response
     """
+    if not gemini_breaker.allow_request():
+        raise RuntimeError("Gemini API circuit breaker is OPEN — too many recent failures. Please try again later.")
+
     last_error = None
     for attempt in range(1 + max_retries):
         try:
             if attempt > 0:
                 logger.info(f"Retry attempt {attempt}/{max_retries}...")
-            return await _call_gemini_with_timeout(client, model, contents, config, timeout)
+            result = await _call_gemini_with_timeout(client, model, contents, config, timeout)
+            gemini_breaker.record_success()
+            return result
         except (TimeoutError, Exception) as e:
             last_error = e
+            gemini_breaker.record_failure()
             logger.warning(f"Gemini call failed (attempt {attempt + 1}/{1 + max_retries}): {e}")
             if attempt < max_retries:
                 await asyncio.sleep(2)  # Brief pause before retry
@@ -177,6 +187,13 @@ async def _firecrawl_search(query: str, limit: int = 5, timeout: int = 30) -> Li
         logger.warning("FIRECRAWL_API_KEY not set — cannot use Firecrawl search")
         return []
 
+    # Check Redis cache for Firecrawl results
+    fc_cache_key = cache.hash_key("firecrawl", f"{query}:{limit}")
+    cached_results = await cache.get(fc_cache_key)
+    if cached_results is not None:
+        logger.debug(f"Firecrawl cache hit for: {query}")
+        return cached_results
+
     payload = {
         "query": query,
         "limit": limit,
@@ -212,6 +229,10 @@ async def _firecrawl_search(query: str, limit: int = 5, timeout: int = 30) -> Li
                     results.extend(items)
 
         logger.debug(f"Firecrawl: {len(results)} results for: {query}")
+
+        # Cache the results
+        await cache.set(fc_cache_key, results, ttl=settings.CACHE_FIRECRAWL_TTL)
+
         return results
 
     except httpx.TimeoutException:
@@ -244,6 +265,13 @@ async def check_product_cache(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
         return {"error": "product_name is required"}
 
     logger.debug(f"Cache lookup: {product_name}")
+
+    # Check Redis cache first
+    cache_key = cache.hash_key("product_cache", product_name)
+    cached = await cache.get(cache_key)
+    if cached is not None:
+        logger.debug(f"Redis cache hit for: {product_name}")
+        return cached
 
     # Search for product
     search_term = f"%{product_name}%"
@@ -291,7 +319,7 @@ async def check_product_cache(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
             "created_at": review.created_at.isoformat() if review.created_at else None
         })
 
-    return {
+    result = {
         "status": "found",
         "product": {
             "id": product.id,
@@ -302,6 +330,11 @@ async def check_product_cache(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
         },
         "reviews": reviews_data
     }
+
+    # Cache the result in Redis
+    await cache.set(cache_key, result, ttl=settings.CACHE_PRODUCT_TTL)
+
+    return result
 
 
 # =============================================================================
@@ -572,6 +605,16 @@ Return as JSON:
         db.add(review)
         await db.commit()
         await db.refresh(review)
+
+        # Store embedding in Qdrant for vector search
+        await embedding_service.store_review_embedding(
+            review_id=review.id,
+            product_id=product.id,
+            product_name=product_name,
+            reviewer_name=channel_name,
+            content=full_content,
+            source_url=video_url,
+        )
 
         log_detail(logger, f"Ingested: \"{data.get('video_title', '?')}\" by {channel_name}")
 
@@ -903,6 +946,16 @@ Return as JSON:
         await db.commit()
         await db.refresh(review)
 
+        # Store embedding in Qdrant for vector search
+        await embedding_service.store_review_embedding(
+            review_id=review.id,
+            product_id=product.id,
+            product_name=product_name,
+            reviewer_name=publication_name,
+            content=full_content,
+            source_url=url,
+        )
+
         log_detail(logger, f"Ingested: \"{data.get('article_title', '?')}\" from {publication_name}")
 
         return {
@@ -921,6 +974,97 @@ Return as JSON:
             "error": str(e),
             "url": url
         }
+
+
+# =============================================================================
+# Tool 5b: Batch Ingest Reviews (Parallel)
+# =============================================================================
+
+@register_function("ingest_reviews_batch")
+async def ingest_reviews_batch(db: AsyncSession, args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ingest multiple YouTube and blog reviews in parallel.
+
+    Each parallel task gets its own AsyncSession because AsyncSession
+    is not safe for concurrent use.
+
+    Args:
+        db: Database session (unused — each task creates its own)
+        args: {product_name: str, youtube_urls?: list[str], blog_urls?: list[str]}
+
+    Returns:
+        Aggregate results with succeeded/failed counts
+    """
+    product_name = args.get("product_name", "").strip()
+    youtube_urls = args.get("youtube_urls") or []
+    blog_urls = args.get("blog_urls") or []
+
+    if not product_name:
+        return {"error": "product_name is required"}
+
+    if not youtube_urls and not blog_urls:
+        return {"error": "At least one of youtube_urls or blog_urls is required"}
+
+    # Semaphore to limit concurrent Gemini calls
+    semaphore = asyncio.Semaphore(5)
+
+    async def _ingest_one(ingest_fn, fn_args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a single ingestion with its own DB session."""
+        async with semaphore:
+            async with AsyncSessionLocal() as session:
+                try:
+                    result = await ingest_fn(session, fn_args)
+                    await session.commit()
+                    return result
+                except Exception as e:
+                    await session.rollback()
+                    return {"status": "error", "error": str(e)}
+
+    # Build task list
+    tasks = []
+    for url in youtube_urls:
+        tasks.append(_ingest_one(
+            ingest_youtube_review,
+            {"video_url": url, "product_name": product_name}
+        ))
+    for url in blog_urls:
+        tasks.append(_ingest_one(
+            ingest_blog_review,
+            {"url": url, "product_name": product_name}
+        ))
+
+    logger.info(f"Batch ingestion: {len(youtube_urls)} YouTube + {len(blog_urls)} blog URLs in parallel")
+
+    # Run all in parallel
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Aggregate results
+    succeeded = 0
+    failed = 0
+    details = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            failed += 1
+            details.append({"status": "error", "error": str(result)})
+        elif isinstance(result, dict):
+            if result.get("status") in ("success", "already_exists"):
+                succeeded += 1
+            else:
+                failed += 1
+            details.append(result)
+        else:
+            failed += 1
+            details.append({"status": "error", "error": "Unknown result type"})
+
+    logger.info(f"Batch ingestion complete: {succeeded} succeeded, {failed} failed")
+
+    return {
+        "status": "success" if succeeded > 0 else "error",
+        "succeeded": succeeded,
+        "failed": failed,
+        "total": len(tasks),
+        "results": details
+    }
 
 
 # =============================================================================
@@ -946,6 +1090,13 @@ async def get_reviews_summary(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
         return {"error": "product_name or product_id is required"}
 
     logger.debug(f"Summary generation: {product_name or product_id}")
+
+    # Check Redis cache for summary
+    summary_cache_key = cache.hash_key("summary", product_name or str(product_id))
+    cached_summary = await cache.get(summary_cache_key)
+    if cached_summary is not None:
+        logger.debug(f"Summary cache hit for: {product_name or product_id}")
+        return cached_summary
 
     # Find product
     if product_id:
@@ -1056,7 +1207,7 @@ Return as JSON:
 
         except (json.JSONDecodeError, ValueError):
             # Fallback: return raw text
-            return {
+            fallback_result = {
                 "status": "success",
                 "product": {
                     "id": product.id,
@@ -1075,8 +1226,10 @@ Return as JSON:
                 "overall_summary": response_text,
                 "total_reviews": len(product.reviews)
             }
+            await cache.set(summary_cache_key, fallback_result, ttl=settings.CACHE_SUMMARY_TTL)
+            return fallback_result
 
-        return {
+        summary_result = {
             "status": "success",
             "product": {
                 "id": product.id,
@@ -1090,6 +1243,11 @@ Return as JSON:
             "common_cons": data.get("common_cons", []),
             "total_reviews": len(product.reviews)
         }
+
+        # Cache the summary
+        await cache.set(summary_cache_key, summary_result, ttl=settings.CACHE_SUMMARY_TTL)
+
+        return summary_result
 
     except Exception as e:
         logger.error(f"Error generating summaries: {e}", exc_info=True)

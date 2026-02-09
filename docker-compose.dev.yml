@@ -17,12 +17,24 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://shoplens:shoplens@postgres:5432/shoplens
       - REDIS_URL=redis://redis:6379/0
-      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key-not-for-production}
+      # LLM provider: "gemini" or "openai"
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
       - LLM_MODEL=${LLM_MODEL:-gemini-3-flash-preview}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.2}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-models/text-embedding-004}
+      # Rate limiting
+      - RATE_LIMIT_CHAT=${RATE_LIMIT_CHAT:-10/minute}
+      - RATE_LIMIT_AUTH=${RATE_LIMIT_AUTH:-5/minute}
+      # Cache TTLs
+      - CACHE_PRODUCT_TTL=${CACHE_PRODUCT_TTL:-3600}
+      - CACHE_FIRECRAWL_TTL=${CACHE_FIRECRAWL_TTL:-1800}
+      - CACHE_SUMMARY_TTL=${CACHE_SUMMARY_TTL:-7200}
       - ENVIRONMENT=development
       - DEBUG=true
       - FORCE_COLOR=1

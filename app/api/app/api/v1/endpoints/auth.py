@@ -1,23 +1,27 @@
 """Authentication endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.schemas.user import UserCreate, UserResponse, Token, LoginRequest, RefreshTokenRequest
 from app.crud.user import user_crud
+from app.core.config import settings
 from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
     require_auth,
 )
+from app.core.rate_limit import limiter
 
 router = APIRouter()
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(settings.RATE_LIMIT_AUTH)
 async def register(
+    request: Request,
     user_in: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
@@ -37,7 +41,9 @@ async def register(
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit(settings.RATE_LIMIT_AUTH)
 async def login(
+    request: Request,
     login_data: LoginRequest,
     db: AsyncSession = Depends(get_db)
 ):

@@ -21,6 +21,12 @@ export interface ReviewerCardsAttachment {
 
 export type Attachment = ReviewerCardsAttachment | { type: string; data: unknown }
 
+export interface ProgressStep {
+  step: string
+  label: string
+  status: 'running' | 'done'
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'

@@ -1,16 +1,15 @@
-"""Chat service with Gemini function calling integration."""
+"""Chat service with multi-provider LLM function calling integration."""
 
 import json
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable, Awaitable
 from uuid import UUID
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
+from app.core.circuit_breaker import gemini_breaker
 from app.core.logging import (
     get_logger, log_header, log_success, log_fail, log_detail, elapsed_str,
     BOLD, CYAN, DIM, GREEN, YELLOW, MAGENTA, RESET, LINE,
@@ -24,8 +23,28 @@ from app.schemas.chat import (
     Attachment,
 )
 from app.functions.registry import FUNCTION_DECLARATIONS, execute_function
+from app.services.llm_service import get_llm_provider, BaseLLMProvider
 
 logger = get_logger(__name__)
+
+# Safety limit for function calling loop iterations
+MAX_FUNCTION_CALL_ITERATIONS = 25
+
+# Human-readable labels for function calling progress events
+FUNCTION_LABELS = {
+    "check_product_cache": "Checking product cache",
+    "search_youtube_reviews": "Searching YouTube",
+    "search_blog_reviews": "Searching blog reviews",
+    "ingest_reviews_batch": "Analyzing reviews",
+    "ingest_youtube_review": "Analyzing YouTube review",
+    "ingest_blog_review": "Analyzing blog review",
+    "get_reviews_summary": "Generating summary",
+    "find_marketplace_listings": "Finding where to buy",
+    "compare_products": "Comparing products",
+    "search_products": "Searching products",
+    "get_product_reviews": "Fetching reviews",
+    "semantic_search": "Searching knowledge base",
+}
 
 # System prompt for ShopLens AI
 SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make informed purchasing decisions by aggregating and analyzing product reviews from trusted tech reviewers on YouTube and tech blogs.
@@ -50,11 +69,10 @@ When user asks about a product (e.g., "Tell me about Samsung Galaxy S25"):
 
 ### Step 2: Gather New Reviews (ONLY if not in cache)
 - Call `search_youtube_reviews(product_name, limit=3)` to find YouTube review URLs
-- For EACH URL returned, call `ingest_youtube_review(video_url, product_name)`
 - Call `search_blog_reviews(product_name, limit=2)` to find blog review URLs
-- For EACH URL returned, call `ingest_blog_review(url, product_name)`
-- Skip any URLs that fail and continue with others
-- After all ingestion is done, call `get_reviews_summary(product_name)`
+- Call `ingest_reviews_batch(product_name, youtube_urls=[...], blog_urls=[...])` ONCE with ALL URLs from both searches — this ingests them in parallel and is much faster than calling individually
+- After batch ingestion is done, call `get_reviews_summary(product_name)`
+- IMPORTANT: Do NOT call `ingest_youtube_review` or `ingest_blog_review` individually — always use `ingest_reviews_batch` for efficiency
 
 ### Step 3: Present Summary (ALWAYS ends with text response)
 After calling `get_reviews_summary`:
@@ -72,9 +90,10 @@ After calling `get_reviews_summary`:
 ## Function Reference:
 - `check_product_cache(product_name)` - Check if we have cached reviews
 - `search_youtube_reviews(product_name, limit)` - Find YouTube review URLs
-- `ingest_youtube_review(video_url, product_name)` - Analyze and store YouTube review
 - `search_blog_reviews(product_name, limit)` - Find blog review URLs
-- `ingest_blog_review(url, product_name)` - Scrape and store blog review
+- `ingest_reviews_batch(product_name, youtube_urls, blog_urls)` - Ingest all reviews in parallel (PREFERRED)
+- `ingest_youtube_review(video_url, product_name)` - Analyze and store YouTube review (fallback only)
+- `ingest_blog_review(url, product_name)` - Scrape and store blog review (fallback only)
 - `get_reviews_summary(product_name)` - Get per-reviewer and overall summaries
 - `find_marketplace_listings(product_name, count_per_marketplace)` - Find where to buy
 
@@ -102,11 +121,11 @@ Helpful, knowledgeable, and conversational. Like talking to a tech-savvy friend 
 
 class ChatService:
     """
-    Main chat service using Gemini with function calling.
+    Main chat service with multi-provider LLM function calling.
 
     Handles:
     - Conversation management
-    - Gemini API integration
+    - LLM provider abstraction (Gemini / OpenAI)
     - Function calling loop
     - Response formatting
     """
@@ -114,81 +133,25 @@ class ChatService:
     def __init__(self, db: AsyncSession):
         """Initialize chat service with database session."""
         self.db = db
-        self.client = None
+        self.provider: Optional[BaseLLMProvider] = None
         self.tools = None
-        self._init_gemini()
+        self._init_provider()
 
-    def _init_gemini(self):
-        """Initialize Gemini client and tools."""
-        if not settings.GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not set - chat will not work")
-            return
-
+    def _init_provider(self):
+        """Initialize LLM provider and tools."""
         try:
-            # Initialize the new genai client
-            self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
-            # Convert function declarations to the new format
-            function_declarations = []
-            for func in FUNCTION_DECLARATIONS:
-                # Build properties dict for the schema
-                properties = {}
-                for param_name, param_schema in func["parameters"]["properties"].items():
-                    properties[param_name] = self._convert_param_schema(param_schema)
-
-                func_decl = types.FunctionDeclaration(
-                    name=func["name"],
-                    description=func["description"],
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties=properties,
-                        required=func["parameters"].get("required", [])
-                    )
-                )
-                function_declarations.append(func_decl)
-
-            # Create tools with function declarations
-            self.tools = [types.Tool(function_declarations=function_declarations)]
-
-            logger.info("Gemini client initialized successfully with function calling")
-
+            self.provider = get_llm_provider()
+            self.tools = self.provider.convert_function_declarations(FUNCTION_DECLARATIONS)
+            logger.info(f"LLM provider initialized: {settings.LLM_PROVIDER}")
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client: {e}", exc_info=True)
-            self.client = None
-
-    def _convert_param_schema(self, param: Dict[str, Any]) -> types.Schema:
-        """Convert parameter schema to Gemini types.Schema format."""
-        type_mapping = {
-            "string": types.Type.STRING,
-            "integer": types.Type.INTEGER,
-            "number": types.Type.NUMBER,
-            "boolean": types.Type.BOOLEAN,
-            "array": types.Type.ARRAY,
-            "object": types.Type.OBJECT,
-        }
-
-        schema_type = type_mapping.get(param.get("type", "string"), types.Type.STRING)
-
-        schema_kwargs = {
-            "type": schema_type,
-        }
-
-        if "description" in param:
-            schema_kwargs["description"] = param["description"]
-
-        if "enum" in param:
-            schema_kwargs["enum"] = param["enum"]
-
-        if param.get("type") == "array" and "items" in param:
-            items_type = type_mapping.get(param["items"].get("type", "string"), types.Type.STRING)
-            schema_kwargs["items"] = types.Schema(type=items_type)
-
-        return types.Schema(**schema_kwargs)
+            logger.error(f"Failed to initialize LLM provider: {e}", exc_info=True)
+            self.provider = None
 
     async def process_message(
         self,
         request: ChatRequest,
-        user_id: Optional[int] = None
+        user_id: Optional[int] = None,
+        on_progress: Optional[Callable[[Dict[str, str]], Awaitable[None]]] = None,
     ) -> ChatResponse:
         """
         Process a chat message using Gemini with function calling.
@@ -203,10 +166,10 @@ class ChatService:
         Returns:
             ChatResponse with AI response and metadata
         """
-        # Check if client is initialized
-        if self.client is None:
+        # Check if provider is initialized
+        if self.provider is None:
             raise RuntimeError(
-                "Gemini client is not initialized. Please check that GEMINI_API_KEY is set correctly."
+                "LLM provider is not initialized. Please check your API keys and LLM_PROVIDER setting."
             )
 
         start_time = time.time()
@@ -241,8 +204,46 @@ class ChatService:
         history = await self._build_chat_history_excluding_last(conversation.id)
 
         try:
-            # Create content configuration
-            config = types.GenerateContentConfig(
+            # Check circuit breaker before making Gemini calls
+            if not gemini_breaker.allow_request():
+                logger.warning("Gemini circuit breaker is OPEN — returning graceful error")
+                final_response = (
+                    "I'm currently experiencing issues connecting to the AI service. "
+                    "Please try again in a moment."
+                )
+                execution_time = int((time.time() - start_time) * 1000)
+                sources = []
+                attachments = []
+
+                assistant_message = await conversation_crud.add_message(
+                    self.db,
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=final_response,
+                    agent_metadata={
+                        "model": settings.LLM_MODEL,
+                        "functions_called": [],
+                        "execution_time_ms": execution_time,
+                        "circuit_breaker": "open",
+                    },
+                )
+                await self._update_conversation_context(conversation.id, [])
+                await self.db.commit()
+
+                return ChatResponse(
+                    message=MessageResponse(
+                        id=assistant_message.id,
+                        role="assistant",
+                        content=final_response,
+                        sources=None,
+                        attachments=None,
+                        created_at=assistant_message.created_at
+                    ),
+                    conversation_id=conversation.id
+                )
+
+            # Create content configuration via provider
+            config = self.provider.build_config(
                 system_instruction=SYSTEM_PROMPT,
                 tools=self.tools,
                 temperature=0.7,
@@ -254,28 +255,27 @@ class ChatService:
             contents = list(history) if history else []
 
             # Add user message
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(text=request.message)]
-            ))
+            contents.append(self.provider.build_content("user", request.message))
 
             # Initial request
-            response = await self.client.aio.models.generate_content(
-                model=settings.LLM_MODEL,
-                contents=contents,
-                config=config
-            )
+            try:
+                response = await self.provider.generate(contents, config)
+                gemini_breaker.record_success()
+            except Exception:
+                gemini_breaker.record_failure()
+                raise
 
-            # Handle function calling loop with thought_signature preservation
-            while self._has_function_call(response):
-                # Extract function call and thought_signature from the same part
-                function_call_part = self._extract_function_call_part(response)
-                if not function_call_part or not function_call_part.function_call:
+            # Handle function calling loop (provider-agnostic)
+            iteration = 0
+            while self.provider.has_function_call(response) and iteration < MAX_FUNCTION_CALL_ITERATIONS:
+                # Extract function call from response
+                fc = self.provider.extract_function_call(response)
+                function_call_part = self.provider.extract_function_call_part(response)
+                if not fc:
                     break
 
-                function_call = function_call_part.function_call
-                function_name = function_call.name
-                function_args = dict(function_call.args) if function_call.args else {}
+                function_name = fc["name"]
+                function_args = fc["args"]
                 functions_called.append(function_name)
                 fn_step += 1
                 fn_start = time.time()
@@ -286,6 +286,15 @@ class ChatService:
                 )
                 logger.info(f"{BOLD}{CYAN}[fn {fn_step}]{RESET} {function_name}({short_args})")
 
+                # Emit progress: function starting
+                if on_progress:
+                    await on_progress({
+                        "type": "progress",
+                        "step": function_name,
+                        "status": "running",
+                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                    })
+
                 # Execute the function
                 function_result = await execute_function(
                     self.db,
@@ -295,12 +304,11 @@ class ChatService:
 
                 # Log function result summary
                 fn_elapsed = elapsed_str(fn_start)
-                status = function_result.get("status", "")
+                result_status = function_result.get("status", "")
                 err = function_result.get("error", "")
                 if err:
                     logger.info(f"  {YELLOW}⚠{RESET} {err} {fn_elapsed}")
-                elif status in ("success", "found"):
-                    # Build a concise result summary
+                elif result_status in ("success", "found"):
                     summary_parts = []
                     for key in ("total_reviews", "urls", "videos", "articles", "amazon", "ebay", "reviews"):
                         val = function_result.get(key)
@@ -308,10 +316,19 @@ class ChatService:
                             summary_parts.append(f"{len(val)} {key}")
                         elif isinstance(val, (int, float)) and val:
                             summary_parts.append(f"{key}={val}")
-                    detail = ", ".join(summary_parts) if summary_parts else status
+                    detail = ", ".join(summary_parts) if summary_parts else result_status
                     logger.info(f"  {GREEN}✓{RESET} {detail} {fn_elapsed}")
                 else:
-                    logger.info(f"  {DIM}→ {status or 'done'}{RESET} {fn_elapsed}")
+                    logger.info(f"  {DIM}→ {result_status or 'done'}{RESET} {fn_elapsed}")
+
+                # Emit progress: function done
+                if on_progress:
+                    await on_progress({
+                        "type": "progress",
+                        "step": function_name,
+                        "status": "done",
+                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                    })
 
                 # Store function result for attachment extraction
                 function_results.append({
@@ -320,48 +337,47 @@ class ChatService:
                     "result": function_result
                 })
 
-                # CRITICAL: Append the complete model response to preserve thought_signature
-                # The model's content includes the function_call part WITH thought_signature
-                model_content = response.candidates[0].content
-                contents.append(model_content)
-
-                # Extract thought_signature from the function call part
-                # Requires google-genai SDK >= 1.50.0 for Gemini 3 thought_signature support
-                thought_sig = getattr(function_call_part, 'thought_signature', None)
-
-                # Create function response with thought_signature if present
-                if thought_sig:
-                    # Manually construct Part with thought_signature
-                    function_response_part = types.Part(
-                        function_response=types.FunctionResponse(
-                            name=function_name,
-                            response={"result": json.dumps(function_result)}
-                        ),
-                        thought_signature=thought_sig
-                    )
-                else:
-                    # Fallback: Create function response without thought_signature
-                    # Note: This may cause issues with Gemini 3 models
-                    function_response_part = types.Part.from_function_response(
-                        name=function_name,
-                        response={"result": json.dumps(function_result)}
-                    )
-
-                # Add function response
-                contents.append(types.Content(
-                    role="user",
-                    parts=[function_response_part]
-                ))
+                # Build provider-specific function response items and append to contents
+                response_items = self.provider.build_function_response(
+                    function_name, function_result, response, function_call_part
+                )
+                contents.extend(response_items)
 
                 # Send updated contents back to model
-                response = await self.client.aio.models.generate_content(
-                    model=settings.LLM_MODEL,
-                    contents=contents,
-                    config=config
+                try:
+                    response = await self.provider.generate(contents, config)
+                    gemini_breaker.record_success()
+                except Exception:
+                    gemini_breaker.record_failure()
+                    raise
+
+                iteration += 1
+
+            # Check if we hit the iteration limit
+            if iteration >= MAX_FUNCTION_CALL_ITERATIONS:
+                logger.warning(
+                    f"Function calling loop hit max iterations ({MAX_FUNCTION_CALL_ITERATIONS}). "
+                    f"Functions called: {functions_called}"
                 )
 
+            # Emit progress: generating final response
+            if on_progress and functions_called:
+                await on_progress({
+                    "type": "progress",
+                    "step": "generating",
+                    "status": "running",
+                    "label": "Generating response",
+                })
+
             # Extract final text response
-            final_response = self._extract_text(response)
+            final_response = self.provider.extract_text(response)
+
+            # Fallback message if iteration limit was reached with no text
+            if not final_response and iteration >= MAX_FUNCTION_CALL_ITERATIONS:
+                final_response = (
+                    "I gathered some information but reached my processing limit. "
+                    "Please try asking your question again, and I'll do my best to help."
+                )
 
             total_elapsed = elapsed_str(start_time)
             if functions_called:
@@ -380,7 +396,7 @@ class ChatService:
                 )
 
         except Exception as e:
-            logger.error(f"Gemini API error: {e}", exc_info=True)
+            logger.error(f"LLM API error: {e}", exc_info=True)
             final_response = "I'm sorry, I encountered an error processing your request. Please try again."
             functions_called = []
 
@@ -397,7 +413,8 @@ class ChatService:
             role="assistant",
             content=final_response,
             agent_metadata={
-                "model": settings.LLM_MODEL,
+                "provider": settings.LLM_PROVIDER,
+                "model": settings.LLM_MODEL if settings.LLM_PROVIDER == "gemini" else settings.OPENAI_MODEL,
                 "functions_called": functions_called,
                 "execution_time_ms": execution_time,
             },
@@ -423,103 +440,38 @@ class ChatService:
             conversation_id=conversation.id
         )
 
-    async def _build_chat_history(self, conversation_id: UUID) -> List[types.Content]:
-        """Build chat history in Gemini format."""
+    async def _build_chat_history(self, conversation_id: UUID) -> List[Any]:
+        """Build chat history in provider format."""
         messages = await conversation_crud.get_recent_messages(
             self.db,
             conversation_id=conversation_id,
-            limit=20  # Last 20 messages for context
+            limit=20
         )
 
         history = []
         for msg in messages:
             role = "user" if msg.role.value == "user" else "model"
-            history.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part(text=msg.content)]
-                )
-            )
+            history.append(self.provider.build_content(role, msg.content))
 
         return history
 
-    async def _build_chat_history_excluding_last(self, conversation_id: UUID) -> List[types.Content]:
-        """Build chat history excluding the most recent message (to avoid duplicates).
-
-        This is used when we've just saved the user's message to the database
-        but will send it separately to the chat interface.
-        """
+    async def _build_chat_history_excluding_last(self, conversation_id: UUID) -> List[Any]:
+        """Build chat history excluding the most recent message (to avoid duplicates)."""
         messages = await conversation_crud.get_recent_messages(
             self.db,
             conversation_id=conversation_id,
-            limit=21  # Get one extra to account for excluding the last
+            limit=21
         )
 
-        # Exclude the most recent message (which we'll send separately)
         if messages:
-            messages = messages[1:]  # Skip the first (most recent) message
+            messages = messages[1:]
 
         history = []
         for msg in messages:
             role = "user" if msg.role.value == "user" else "model"
-            history.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part(text=msg.content)]
-                )
-            )
+            history.append(self.provider.build_content(role, msg.content))
 
         return history
-
-    def _has_function_call(self, response) -> bool:
-        """Check if response contains a function call."""
-        try:
-            if not response.candidates:
-                return False
-            content = response.candidates[0].content
-            if not content or not content.parts:
-                return False
-            parts = content.parts
-            return hasattr(parts[0], 'function_call') and parts[0].function_call and parts[0].function_call.name
-        except (AttributeError, IndexError):
-            return False
-
-    def _extract_function_call(self, response):
-        """Extract function call from response."""
-        try:
-            return response.candidates[0].content.parts[0].function_call
-        except (AttributeError, IndexError):
-            return None
-
-    def _extract_function_call_part(self, response):
-        """Extract the Part containing the function call (includes thought_signature)."""
-        try:
-            if not response.candidates:
-                return None
-            content = response.candidates[0].content
-            if not content or not content.parts:
-                return None
-            for part in content.parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    return part
-            return None
-        except (AttributeError, IndexError):
-            return None
-
-    def _extract_text(self, response) -> str:
-        """Extract text content from response."""
-        try:
-            if not response.candidates:
-                return ""
-            content = response.candidates[0].content
-            if not content or not content.parts:
-                return ""
-            for part in content.parts:
-                if hasattr(part, 'text') and part.text:
-                    return part.text
-            return ""
-        except (AttributeError, IndexError):
-            return ""
 
     def _generate_title(self, message: str) -> str:
         """Generate a title for a new conversation."""
