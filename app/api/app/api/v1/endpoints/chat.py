@@ -86,39 +86,35 @@ async def stream_chat_message(
     async def on_progress(event: dict):
         await queue.put(event)
 
-    async def generate():
+    async def run_chat():
+        """Run process_message with its own DB session inside the task."""
         from app.db.session import AsyncSessionLocal
 
         async with AsyncSessionLocal() as db:
             try:
                 chat_service = ChatService(db)
-                task = asyncio.create_task(
-                    chat_service.process_message(chat_request, user_id=user_id, on_progress=on_progress)
+                result = await chat_service.process_message(
+                    chat_request, user_id=user_id, on_progress=on_progress
                 )
-
-                while not task.done():
-                    try:
-                        event = await asyncio.wait_for(queue.get(), timeout=1.0)
-                        yield f"data: {json.dumps(event)}\n\n"
-                    except asyncio.TimeoutError:
-                        continue
-
-                # Drain any remaining queued events
-                while not queue.empty():
-                    event = await queue.get()
-                    yield f"data: {json.dumps(event)}\n\n"
-
-                # Send final result or error
-                exc = task.exception()
-                if exc:
-                    logger.error(f"Stream chat error: {exc}")
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to process chat message. Please try again.'})}\n\n"
-                else:
-                    result = task.result()
-                    yield f"data: {json.dumps({'type': 'complete', 'data': result.model_dump(mode='json')})}\n\n"
+                await queue.put({"type": "complete", "data": result.model_dump(mode="json")})
             except Exception as e:
-                logger.error(f"Stream generator error: {e}", exc_info=True)
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to process chat message. Please try again.'})}\n\n"
+                logger.error(f"Stream chat error: {e}", exc_info=True)
+                await queue.put({"type": "error", "message": "Failed to process chat message. Please try again."})
+
+    async def generate():
+        task = asyncio.create_task(run_chat())
+
+        while not task.done():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                yield f"data: {json.dumps(event)}\n\n"
+            except asyncio.TimeoutError:
+                continue
+
+        # Drain any remaining queued events
+        while not queue.empty():
+            event = await queue.get()
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

@@ -631,6 +631,34 @@ class ChatService:
                         }
                     ))
 
+            # Extract marketplace listings from find_marketplace_listings
+            elif func_name == "find_marketplace_listings" and result.get("status") in ("success", "partial"):
+                listings = []
+                for item in result.get("amazon", []):
+                    listings.append({
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "price": item.get("price", ""),
+                        "description": item.get("seller", ""),
+                        "marketplace": "amazon",
+                    })
+                for item in result.get("ebay", []):
+                    listings.append({
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "price": item.get("price", ""),
+                        "description": item.get("condition", ""),
+                        "marketplace": "ebay",
+                    })
+                if listings:
+                    attachments.append(Attachment(
+                        type="marketplace_listings",
+                        data={
+                            "product_name": result.get("product_name", ""),
+                            "listings": listings,
+                        }
+                    ))
+
         return attachments
 
     async def _update_conversation_context(

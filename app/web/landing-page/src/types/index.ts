@@ -10,6 +10,15 @@ export interface ReviewerCard {
   cons: string[]
 }
 
+// Marketplace listing data from backend
+export interface MarketplaceListing {
+  title: string
+  url: string
+  price: string
+  description: string
+  marketplace: 'amazon' | 'ebay' | string
+}
+
 // Attachment types
 export interface ReviewerCardsAttachment {
   type: 'reviewer_cards'
@@ -19,7 +28,15 @@ export interface ReviewerCardsAttachment {
   }
 }
 
-export type Attachment = ReviewerCardsAttachment | { type: string; data: unknown }
+export interface MarketplaceListingsAttachment {
+  type: 'marketplace_listings'
+  data: {
+    product_name: string
+    listings: MarketplaceListing[]
+  }
+}
+
+export type Attachment = ReviewerCardsAttachment | MarketplaceListingsAttachment | { type: string; data: unknown }
 
 export interface ProgressStep {
   step: string

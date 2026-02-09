@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChat } from '@/hooks'
 import { formatMarkdown } from '@/lib/utils'
 import { LogoIcon, SendIcon } from '@/components/ui'
-import type { ChatMessage, ReviewerCard, Attachment, ProgressStep } from '@/types'
+import type { ChatMessage, ReviewerCard, MarketplaceListing, Attachment, ProgressStep } from '@/types'
 
 // Icons
 function ArrowLeftIcon({ className }: { className?: string }) {
@@ -545,6 +545,122 @@ function ReviewerCards({ cards }: { cards: ReviewerCard[]; productName?: string 
   )
 }
 
+// Marketplace listing card component
+function MarketplaceListingCard({ listing, index }: { listing: MarketplaceListing; index: number }) {
+  const isAmazon = listing.marketplace === 'amazon'
+
+  return (
+    <motion.a
+      href={listing.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay: index * 0.08, ease: [0.16, 1, 0.3, 1] }}
+      className="group flex gap-4 p-4 rounded-xl border transition-all duration-200"
+      style={{
+        background: 'var(--color-bg-secondary)',
+        borderColor: 'var(--color-glass-border)',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'
+        e.currentTarget.style.background = 'var(--color-bg-tertiary)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--color-glass-border)'
+        e.currentTarget.style.background = 'var(--color-bg-secondary)'
+      }}
+    >
+      {/* Marketplace icon */}
+      <div
+        className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+        style={{
+          background: isAmazon ? 'rgba(255, 153, 0, 0.1)' : 'rgba(86, 130, 245, 0.1)',
+        }}
+      >
+        {isAmazon ? (
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">
+            <path d="M3 17.5C7.5 20.5 13.5 21 18 18.5M19.5 17L21 18.5L19 20" stroke="#FF9900" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M4 12.5C4 8.5 7.5 5 12 5C16.5 5 20 8.5 20 12.5" stroke="#FF9900" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        ) : (
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="6" width="18" height="13" rx="2" stroke="#5682F5" strokeWidth="2" />
+            <path d="M7 10L10 14L14 10L17 14" stroke="#5682F5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <h4 className="text-sm font-semibold text-[var(--color-text-primary)] truncate">
+            {listing.title || 'View Listing'}
+          </h4>
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full flex-shrink-0"
+            style={{
+              background: isAmazon ? 'rgba(255, 153, 0, 0.12)' : 'rgba(86, 130, 245, 0.12)',
+              color: isAmazon ? '#FF9900' : '#5682F5',
+            }}
+          >
+            {isAmazon ? 'Amazon' : 'eBay'}
+          </span>
+        </div>
+
+        {listing.description && (
+          <p className="text-xs text-[var(--color-text-muted)] line-clamp-1 mb-1.5">
+            {listing.description}
+          </p>
+        )}
+
+        {listing.price && (
+          <span className="text-base font-bold text-[var(--color-accent-primary)]">
+            {listing.price}
+          </span>
+        )}
+
+        <div className="flex items-center gap-1 mt-1.5 text-xs text-[var(--color-text-muted)] group-hover:text-[var(--color-accent-primary)] transition-colors">
+          <span className="truncate" style={{ maxWidth: '280px' }}>{listing.url}</span>
+          <ExternalLinkIcon className="w-3 h-3 flex-shrink-0" />
+        </div>
+      </div>
+    </motion.a>
+  )
+}
+
+// Marketplace cards grid component
+function MarketplaceCards({ listings, productName }: { listings: MarketplaceListing[]; productName?: string }) {
+  if (!listings || listings.length === 0) return null
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      className="mt-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          Where to Buy{productName ? ` ${productName}` : ''}
+        </h3>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          ({listings.length} {listings.length === 1 ? 'listing' : 'listings'})
+        </span>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {listings.map((listing, index) => (
+          <MarketplaceListingCard
+            key={`${listing.marketplace}-${index}`}
+            listing={listing}
+            index={index}
+          />
+        ))}
+      </div>
+    </motion.div>
+  )
+}
+
 // Attachments renderer
 function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
   return (
@@ -556,6 +672,16 @@ function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
             <ReviewerCards
               key={`attachment-${index}`}
               cards={data.cards}
+              productName={data.product_name}
+            />
+          )
+        }
+        if (attachment.type === 'marketplace_listings') {
+          const data = attachment.data as { product_name: string; listings: MarketplaceListing[] }
+          return (
+            <MarketplaceCards
+              key={`attachment-${index}`}
+              listings={data.listings}
               productName={data.product_name}
             />
           )
