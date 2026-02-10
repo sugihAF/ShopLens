@@ -152,9 +152,9 @@ function AIAvatar() {
 }
 
 // Play icon for video reviews
-function PlayIcon({ className }: { className?: string }) {
+function PlayIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} style={style}>
       <path d="M8 5v14l11-7z" />
     </svg>
   )
@@ -181,9 +181,9 @@ function ChevronRightIcon({ className }: { className?: string }) {
 }
 
 // Check icon for pros
-function CheckCircleIcon({ className }: { className?: string }) {
+function CheckCircleIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
       <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
       <polyline points="22 4 12 14.01 9 11.01" />
     </svg>
@@ -191,9 +191,9 @@ function CheckCircleIcon({ className }: { className?: string }) {
 }
 
 // X icon for cons
-function XCircleIcon({ className }: { className?: string }) {
+function XCircleIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
       <circle cx="12" cy="12" r="10" />
       <line x1="15" y1="9" x2="9" y2="15" />
       <line x1="9" y1="9" x2="15" y2="15" />
