@@ -6,12 +6,17 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import get_logger, setup_logging
+from app.core.rate_limit import limiter
 from app.api.v1.router import api_router
 from app.db.session import engine
 from app.db.base import Base
+from app.services.cache_service import cache
+from app.services.embedding_service import embedding_service
 
 logger = get_logger(__name__)
 
@@ -20,6 +25,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
     # Startup
+    setup_logging()
     logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}")
     logger.info(f"Debug mode: {settings.DEBUG}")
 
@@ -29,10 +35,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables created (debug mode)")
 
+    # Connect Redis cache
+    await cache.connect()
+
+    # Initialize embedding service (Qdrant + Gemini embeddings)
+    await embedding_service.initialize()
+
     yield
 
     # Shutdown
     logger.info("Shutting down...")
+    await cache.disconnect()
     await engine.dispose()
 
 
@@ -46,6 +59,10 @@ def create_application() -> FastAPI:
         redoc_url=f"{settings.API_V1_STR}/redoc",
         lifespan=lifespan,
     )
+
+    # Rate limiter
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # CORS middleware
     app.add_middleware(

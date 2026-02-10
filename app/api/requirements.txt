@@ -26,6 +26,7 @@ pydantic-settings>=2.3.0  # Updated for pydantic 2.9+ compatibility
 # AI/LLM - Using new google-genai SDK
 litellm==1.23.1
 google-genai>=1.50.0  # Requires 1.50+ for Gemini 3 thought_signature support
+openai>=1.12.0
 
 # HTTP Client
 httpx>=0.28.1  # Updated for google-genai compatibility
@@ -36,6 +37,9 @@ firecrawl-py>=0.0.16
 
 # Utilities
 python-dotenv==1.0.1
+
+# Rate Limiting
+slowapi==0.1.9
 
 # Security
 bleach==6.1.0

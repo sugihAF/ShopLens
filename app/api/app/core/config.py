@@ -59,16 +59,23 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
     CACHE_TTL: int = 3600  # 1 hour
+    CACHE_PRODUCT_TTL: int = 3600  # 1 hour for product cache lookups
+    CACHE_FIRECRAWL_TTL: int = 1800  # 30 min for Firecrawl search results
+    CACHE_SUMMARY_TTL: int = 7200  # 2 hours for generated summaries
 
     # Qdrant Vector Database
     QDRANT_HOST: str = Field(default="localhost")
     QDRANT_PORT: int = Field(default=6333)
     QDRANT_COLLECTION: str = "reviews"
 
-    # AI/LLM - Gemini
+    # AI/LLM
+    LLM_PROVIDER: str = Field(default="gemini")  # "gemini" or "openai"
     GEMINI_API_KEY: str = Field(default="")
     LLM_MODEL: str = "gemini-3-flash-preview"
     EMBEDDING_MODEL: str = "models/text-embedding-004"
+    OPENAI_API_KEY: str = Field(default="")
+    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # YouTube API (for ingestion)
     YOUTUBE_API_KEY: str = Field(default="")
@@ -79,6 +86,8 @@ class Settings(BaseSettings):
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 100
     RATE_LIMIT_BURST: int = 150
+    RATE_LIMIT_CHAT: str = "10/minute"
+    RATE_LIMIT_AUTH: str = "5/minute"
 
     # Logging
     LOG_LEVEL: str = "INFO"

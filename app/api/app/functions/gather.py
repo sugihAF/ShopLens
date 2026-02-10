@@ -6,8 +6,6 @@ from datetime import datetime, timezone, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from google import genai
-from google.genai import types
 
 from app.functions.registry import register_function
 from app.core.config import settings
@@ -255,10 +253,12 @@ async def search_youtube_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict
 
     logger.info(f"Searching YouTube reviews for: {product_name}")
 
-    # Initialize Gemini client
+    # Initialize Gemini client (required for Google Search grounding)
     if not settings.GEMINI_API_KEY:
-        return {"error": "GEMINI_API_KEY not configured"}
+        return {"error": "GEMINI_API_KEY not configured — Google Search grounding requires Gemini"}
 
+    from google import genai
+    from google.genai import types
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     # Search prompt focusing on tech reviewers
@@ -307,7 +307,17 @@ Only include actual YouTube video URLs that exist. Do not make up URLs."""
             )
         )
 
-        response_text = response.text
+        response_text = response.text or ""
+
+        # Check if we got a valid response
+        if not response_text:
+            logger.warning(f"Empty response from Gemini for YouTube search: {product_name}")
+            return {
+                "status": "no_results",
+                "message": f"Could not search YouTube for '{product_name}'",
+                "urls": [],
+                "product_name": product_name
+            }
 
         # Extract URLs from response
         import re
@@ -379,10 +389,12 @@ async def search_blog_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
 
     logger.info(f"Searching blog reviews for: {product_name}")
 
-    # Initialize Gemini client
+    # Initialize Gemini client (required for Google Search grounding)
     if not settings.GEMINI_API_KEY:
-        return {"error": "GEMINI_API_KEY not configured"}
+        return {"error": "GEMINI_API_KEY not configured — Google Search grounding requires Gemini"}
 
+    from google import genai
+    from google.genai import types
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     # Search prompt focusing on tech blogs
@@ -433,7 +445,17 @@ Only include actual blog review URLs that exist. Do not make up URLs."""
             )
         )
 
-        response_text = response.text
+        response_text = response.text or ""
+
+        # Check if we got a valid response
+        if not response_text:
+            logger.warning(f"Empty response from Gemini for blog search: {product_name}")
+            return {
+                "status": "no_results",
+                "message": f"Could not search blogs for '{product_name}'",
+                "urls": [],
+                "product_name": product_name
+            }
 
         # Extract URLs from response
         import re

@@ -1,17 +1,19 @@
-"""Chat service with Gemini function calling integration."""
+"""Chat service with multi-provider LLM function calling integration."""
 
 import json
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable, Awaitable
 from uuid import UUID
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.circuit_breaker import gemini_breaker
+from app.core.logging import (
+    get_logger, log_header, log_success, log_fail, log_detail, elapsed_str,
+    BOLD, CYAN, DIM, GREEN, YELLOW, MAGENTA, RESET, LINE,
+)
 from app.crud.conversation import conversation_crud
 from app.schemas.chat import (
     ChatRequest,
@@ -21,63 +23,109 @@ from app.schemas.chat import (
     Attachment,
 )
 from app.functions.registry import FUNCTION_DECLARATIONS, execute_function
+from app.services.llm_service import get_llm_provider, BaseLLMProvider
 
 logger = get_logger(__name__)
+
+# Safety limit for function calling loop iterations
+MAX_FUNCTION_CALL_ITERATIONS = 25
+
+# Human-readable labels for function calling progress events
+FUNCTION_LABELS = {
+    "check_product_cache": "Checking product cache",
+    "search_youtube_reviews": "Searching YouTube",
+    "search_blog_reviews": "Searching blog reviews",
+    "ingest_reviews_batch": "Analyzing reviews",
+    "ingest_youtube_review": "Analyzing YouTube review",
+    "ingest_blog_review": "Analyzing blog review",
+    "get_reviews_summary": "Generating summary",
+    "find_marketplace_listings": "Finding where to buy",
+    "compare_products": "Comparing products",
+    "search_products": "Searching products",
+    "get_product_reviews": "Fetching reviews",
+    "semantic_search": "Searching knowledge base",
+}
 
 # System prompt for ShopLens AI
 SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make informed purchasing decisions by aggregating and analyzing product reviews from trusted tech reviewers on YouTube and tech blogs.
 
 ## CRITICAL RULES - READ FIRST:
 1. **NEVER answer from your training data** - You must ONLY use information returned by function calls
-2. **ALWAYS call a function** when the user asks about a product - use `gather_product_reviews` to get data
-3. **If no data is available**, say: "I don't have review data for this product yet. Would you like me to search for reviews?"
+2. **ALWAYS call functions** when the user asks about a product - follow the flow below
+3. **If no data is available**, search for new reviews using the tools
 4. **ALWAYS cite sources** - Format: "According to MKBHD..." or "The Verge says..."
 5. **NEVER make up** product specifications, prices, or reviewer opinions
 
-## Your Capabilities:
-- Search for products across categories (smartphones, laptops, headphones, tablets, etc.)
-- Gather and ingest reviews from YouTube and tech blogs using `gather_product_reviews`
-- Provide review summaries from trusted tech reviewers like MKBHD, Linus Tech Tips, Dave2D, etc.
-- Show reviewer consensus (what they agree/disagree on about a product)
-- Compare multiple products side-by-side
-- Find where to buy products at the best prices using `find_marketplace_listings`
-- Answer specific questions about product features based on reviewer opinions
+## REVIEW FLOW - Follow These Steps:
 
-## Function Calling Guide:
-- User asks about a product -> Call `gather_product_reviews(product_name)`
-- User asks where to buy -> Call `find_marketplace_listings(product_id)`
-- User wants to compare -> Call `compare_products(product_ids)`
-- User provides YouTube URL -> Call `ingest_youtube_review(video_url)`
-- User provides blog URL -> Call `ingest_blog_review(url)`
+### Step 1: Check Cache First
+When user asks about a product (e.g., "Tell me about Samsung Galaxy S25"):
+- Call `check_product_cache(product_name)` FIRST
+- If status="found" with reviews:
+  1. Call `get_reviews_summary(product_name)`
+  2. **STOP calling functions** and write your text response based on the summary data
+  3. Do NOT call search_youtube_reviews or other functions - the data is already cached
+- If status="not_found" or "no_reviews", proceed to Step 2
+
+### Step 2: Gather New Reviews (ONLY if not in cache)
+- Call `search_youtube_reviews(product_name, limit=3)` to find YouTube review URLs
+- Call `search_blog_reviews(product_name, limit=2)` to find blog review URLs
+- Call `ingest_reviews_batch(product_name, youtube_urls=[...], blog_urls=[...])` ONCE with ALL URLs from both searches — this ingests them in parallel and is much faster than calling individually
+- After batch ingestion is done, call `get_reviews_summary(product_name)`
+- IMPORTANT: Do NOT call `ingest_youtube_review` or `ingest_blog_review` individually — always use `ingest_reviews_batch` for efficiency
+
+### Step 3: Present Summary (ALWAYS ends with text response)
+After calling `get_reviews_summary`:
+- **STOP calling functions immediately**
+- Write a comprehensive text response using the summary data
+- Present per-reviewer summaries (paragraph for each reviewer)
+- Present the overall product summary
+- Mention common pros and cons
+
+### Step 4: Marketplace (when asked)
+- When user asks "where can I buy" or about prices
+- Call `find_marketplace_listings(product_name, count_per_marketplace=2)`
+- Present Amazon and eBay links with prices
+
+## Function Reference:
+- `check_product_cache(product_name)` - Check if we have cached reviews
+- `search_youtube_reviews(product_name, limit)` - Find YouTube review URLs
+- `search_blog_reviews(product_name, limit)` - Find blog review URLs
+- `ingest_reviews_batch(product_name, youtube_urls, blog_urls)` - Ingest all reviews in parallel (PREFERRED)
+- `ingest_youtube_review(video_url, product_name)` - Analyze and store YouTube review (fallback only)
+- `ingest_blog_review(url, product_name)` - Scrape and store blog review (fallback only)
+- `get_reviews_summary(product_name)` - Get per-reviewer and overall summaries
+- `find_marketplace_listings(product_name, count_per_marketplace)` - Find where to buy
 
 ## Guidelines:
-1. **Always cite sources**: When sharing information from reviews, mention which reviewer said it
-2. **Be objective**: Present multiple viewpoints when reviewers disagree
-3. **Use data**: Call the appropriate functions to get real data - never make up information
-4. **Be helpful**: If you don't have data on a product, offer to gather reviews
-5. **Be concise**: Give clear, direct answers. Expand only when the user asks for details
-6. **Highlight trade-offs**: When comparing products, clearly explain the pros and cons of each
+1. **Always cite sources**: When sharing information, mention which reviewer said it
+2. **Be thorough**: Present detailed paragraph summaries for each reviewer
+3. **Be objective**: Present multiple viewpoints when reviewers disagree
+4. **Use data**: Call the appropriate functions - never make up information
+5. **Handle errors gracefully**: If some URLs fail, continue with others
 
 ## Response Format:
 - Use markdown for better readability
-- Use bullet points for lists
-- Bold important points
-- When showing multiple products, format them clearly
-- Always attribute information to its source
+- Present each reviewer's summary as a full paragraph (not just bullet points)
+- Bold reviewer names and key points
+- Include links to original reviews when available
 
 ## Tone:
-Helpful, knowledgeable, and conversational but concise. Like talking to a tech-savvy friend who has done the research for you.
+Helpful, knowledgeable, and conversational. Like talking to a tech-savvy friend who has done the research for you.
 
-Remember: You ONLY provide information from function call results. Never answer product questions from your training data. If data is missing, offer to gather it using the appropriate function."""
+## CRITICAL REMINDER:
+- After calling `get_reviews_summary`, you MUST generate a text response - do NOT call any more functions
+- The text response should summarize the review data in a helpful, conversational way
+- If cache has reviews, you do NOT need to search for more - just use `get_reviews_summary` and respond"""
 
 
 class ChatService:
     """
-    Main chat service using Gemini with function calling.
+    Main chat service with multi-provider LLM function calling.
 
     Handles:
     - Conversation management
-    - Gemini API integration
+    - LLM provider abstraction (Gemini / OpenAI)
     - Function calling loop
     - Response formatting
     """
@@ -85,81 +133,25 @@ class ChatService:
     def __init__(self, db: AsyncSession):
         """Initialize chat service with database session."""
         self.db = db
-        self.client = None
+        self.provider: Optional[BaseLLMProvider] = None
         self.tools = None
-        self._init_gemini()
+        self._init_provider()
 
-    def _init_gemini(self):
-        """Initialize Gemini client and tools."""
-        if not settings.GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not set - chat will not work")
-            return
-
+    def _init_provider(self):
+        """Initialize LLM provider and tools."""
         try:
-            # Initialize the new genai client
-            self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
-            # Convert function declarations to the new format
-            function_declarations = []
-            for func in FUNCTION_DECLARATIONS:
-                # Build properties dict for the schema
-                properties = {}
-                for param_name, param_schema in func["parameters"]["properties"].items():
-                    properties[param_name] = self._convert_param_schema(param_schema)
-
-                func_decl = types.FunctionDeclaration(
-                    name=func["name"],
-                    description=func["description"],
-                    parameters=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties=properties,
-                        required=func["parameters"].get("required", [])
-                    )
-                )
-                function_declarations.append(func_decl)
-
-            # Create tools with function declarations
-            self.tools = [types.Tool(function_declarations=function_declarations)]
-
-            logger.info("Gemini client initialized successfully with function calling")
-
+            self.provider = get_llm_provider()
+            self.tools = self.provider.convert_function_declarations(FUNCTION_DECLARATIONS)
+            logger.info(f"LLM provider initialized: {settings.LLM_PROVIDER}")
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client: {e}", exc_info=True)
-            self.client = None
-
-    def _convert_param_schema(self, param: Dict[str, Any]) -> types.Schema:
-        """Convert parameter schema to Gemini types.Schema format."""
-        type_mapping = {
-            "string": types.Type.STRING,
-            "integer": types.Type.INTEGER,
-            "number": types.Type.NUMBER,
-            "boolean": types.Type.BOOLEAN,
-            "array": types.Type.ARRAY,
-            "object": types.Type.OBJECT,
-        }
-
-        schema_type = type_mapping.get(param.get("type", "string"), types.Type.STRING)
-
-        schema_kwargs = {
-            "type": schema_type,
-        }
-
-        if "description" in param:
-            schema_kwargs["description"] = param["description"]
-
-        if "enum" in param:
-            schema_kwargs["enum"] = param["enum"]
-
-        if param.get("type") == "array" and "items" in param:
-            items_type = type_mapping.get(param["items"].get("type", "string"), types.Type.STRING)
-            schema_kwargs["items"] = types.Schema(type=items_type)
-
-        return types.Schema(**schema_kwargs)
+            logger.error(f"Failed to initialize LLM provider: {e}", exc_info=True)
+            self.provider = None
 
     async def process_message(
         self,
         request: ChatRequest,
-        user_id: Optional[int] = None
+        user_id: Optional[int] = None,
+        on_progress: Optional[Callable[[Dict[str, str]], Awaitable[None]]] = None,
     ) -> ChatResponse:
         """
         Process a chat message using Gemini with function calling.
@@ -174,14 +166,19 @@ class ChatService:
         Returns:
             ChatResponse with AI response and metadata
         """
-        # Check if client is initialized
-        if self.client is None:
+        # Check if provider is initialized
+        if self.provider is None:
             raise RuntimeError(
-                "Gemini client is not initialized. Please check that GEMINI_API_KEY is set correctly."
+                "LLM provider is not initialized. Please check your API keys and LLM_PROVIDER setting."
             )
 
         start_time = time.time()
         functions_called = []
+        function_results = []  # Store function results for attachment extraction
+        fn_step = 0
+
+        logger.info(f"{LINE}")
+        logger.info(f"{BOLD}{MAGENTA}Chat{RESET} │ {request.message[:80]}")
 
         # Get or create conversation
         conversation = None
@@ -207,8 +204,46 @@ class ChatService:
         history = await self._build_chat_history_excluding_last(conversation.id)
 
         try:
-            # Create content configuration
-            config = types.GenerateContentConfig(
+            # Check circuit breaker before making Gemini calls
+            if not gemini_breaker.allow_request():
+                logger.warning("Gemini circuit breaker is OPEN — returning graceful error")
+                final_response = (
+                    "I'm currently experiencing issues connecting to the AI service. "
+                    "Please try again in a moment."
+                )
+                execution_time = int((time.time() - start_time) * 1000)
+                sources = []
+                attachments = []
+
+                assistant_message = await conversation_crud.add_message(
+                    self.db,
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=final_response,
+                    agent_metadata={
+                        "model": settings.LLM_MODEL,
+                        "functions_called": [],
+                        "execution_time_ms": execution_time,
+                        "circuit_breaker": "open",
+                    },
+                )
+                await self._update_conversation_context(conversation.id, [])
+                await self.db.commit()
+
+                return ChatResponse(
+                    message=MessageResponse(
+                        id=assistant_message.id,
+                        role="assistant",
+                        content=final_response,
+                        sources=None,
+                        attachments=None,
+                        created_at=assistant_message.created_at
+                    ),
+                    conversation_id=conversation.id
+                )
+
+            # Create content configuration via provider
+            config = self.provider.build_config(
                 system_instruction=SYSTEM_PROMPT,
                 tools=self.tools,
                 temperature=0.7,
@@ -220,31 +255,45 @@ class ChatService:
             contents = list(history) if history else []
 
             # Add user message
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(text=request.message)]
-            ))
+            contents.append(self.provider.build_content("user", request.message))
 
             # Initial request
-            response = await self.client.aio.models.generate_content(
-                model=settings.LLM_MODEL,
-                contents=contents,
-                config=config
-            )
+            try:
+                response = await self.provider.generate(contents, config)
+                gemini_breaker.record_success()
+            except Exception:
+                gemini_breaker.record_failure()
+                raise
 
-            # Handle function calling loop with thought_signature preservation
-            while self._has_function_call(response):
-                # Extract function call and thought_signature from the same part
-                function_call_part = self._extract_function_call_part(response)
-                if not function_call_part or not function_call_part.function_call:
+            # Handle function calling loop (provider-agnostic)
+            iteration = 0
+            while self.provider.has_function_call(response) and iteration < MAX_FUNCTION_CALL_ITERATIONS:
+                # Extract function call from response
+                fc = self.provider.extract_function_call(response)
+                function_call_part = self.provider.extract_function_call_part(response)
+                if not fc:
                     break
 
-                function_call = function_call_part.function_call
-                function_name = function_call.name
-                function_args = dict(function_call.args) if function_call.args else {}
+                function_name = fc["name"]
+                function_args = fc["args"]
                 functions_called.append(function_name)
+                fn_step += 1
+                fn_start = time.time()
 
-                logger.info(f"Calling function: {function_name} with args: {function_args}")
+                # Pretty-print args
+                short_args = ", ".join(
+                    f"{k}={repr(v)[:40]}" for k, v in function_args.items()
+                )
+                logger.info(f"{BOLD}{CYAN}[fn {fn_step}]{RESET} {function_name}({short_args})")
+
+                # Emit progress: function starting
+                if on_progress:
+                    await on_progress({
+                        "type": "progress",
+                        "step": function_name,
+                        "status": "running",
+                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                    })
 
                 # Execute the function
                 function_result = await execute_function(
@@ -253,48 +302,92 @@ class ChatService:
                     function_args
                 )
 
-                # CRITICAL: Append the complete model response to preserve thought_signature
-                # The model's content includes the function_call part WITH thought_signature
-                model_content = response.candidates[0].content
-                contents.append(model_content)
-
-                # Extract thought_signature from the function call part
-                # Requires google-genai SDK >= 1.50.0 for Gemini 3 thought_signature support
-                thought_sig = getattr(function_call_part, 'thought_signature', None)
-
-                # Create function response with thought_signature if present
-                if thought_sig:
-                    # Manually construct Part with thought_signature
-                    function_response_part = types.Part(
-                        function_response=types.FunctionResponse(
-                            name=function_name,
-                            response={"result": json.dumps(function_result)}
-                        ),
-                        thought_signature=thought_sig
-                    )
+                # Log function result summary
+                fn_elapsed = elapsed_str(fn_start)
+                result_status = function_result.get("status", "")
+                err = function_result.get("error", "")
+                if err:
+                    logger.info(f"  {YELLOW}⚠{RESET} {err} {fn_elapsed}")
+                elif result_status in ("success", "found"):
+                    summary_parts = []
+                    for key in ("total_reviews", "urls", "videos", "articles", "amazon", "ebay", "reviews"):
+                        val = function_result.get(key)
+                        if isinstance(val, list) and val:
+                            summary_parts.append(f"{len(val)} {key}")
+                        elif isinstance(val, (int, float)) and val:
+                            summary_parts.append(f"{key}={val}")
+                    detail = ", ".join(summary_parts) if summary_parts else result_status
+                    logger.info(f"  {GREEN}✓{RESET} {detail} {fn_elapsed}")
                 else:
-                    # Fallback: Create function response without thought_signature
-                    # Note: This may cause issues with Gemini 3 models
-                    function_response_part = types.Part.from_function_response(
-                        name=function_name,
-                        response={"result": json.dumps(function_result)}
-                    )
+                    logger.info(f"  {DIM}→ {result_status or 'done'}{RESET} {fn_elapsed}")
 
-                # Add function response
-                contents.append(types.Content(
-                    role="user",
-                    parts=[function_response_part]
-                ))
+                # Emit progress: function done
+                if on_progress:
+                    await on_progress({
+                        "type": "progress",
+                        "step": function_name,
+                        "status": "done",
+                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                    })
+
+                # Store function result for attachment extraction
+                function_results.append({
+                    "name": function_name,
+                    "args": function_args,
+                    "result": function_result
+                })
+
+                # Build provider-specific function response items and append to contents
+                response_items = self.provider.build_function_response(
+                    function_name, function_result, response, function_call_part
+                )
+                contents.extend(response_items)
 
                 # Send updated contents back to model
-                response = await self.client.aio.models.generate_content(
-                    model=settings.LLM_MODEL,
-                    contents=contents,
-                    config=config
+                try:
+                    response = await self.provider.generate(contents, config)
+                    gemini_breaker.record_success()
+                except Exception:
+                    gemini_breaker.record_failure()
+                    raise
+
+                iteration += 1
+
+            # Check if we hit the iteration limit
+            if iteration >= MAX_FUNCTION_CALL_ITERATIONS:
+                logger.warning(
+                    f"Function calling loop hit max iterations ({MAX_FUNCTION_CALL_ITERATIONS}). "
+                    f"Functions called: {functions_called}"
                 )
 
+            # Emit progress: generating final response
+            if on_progress and functions_called:
+                await on_progress({
+                    "type": "progress",
+                    "step": "generating",
+                    "status": "running",
+                    "label": "Generating response",
+                })
+
             # Extract final text response
-            final_response = self._extract_text(response)
+            final_response = self.provider.extract_text(response)
+
+            # Fallback message if iteration limit was reached with no text
+            if not final_response and iteration >= MAX_FUNCTION_CALL_ITERATIONS:
+                final_response = (
+                    "I gathered some information but reached my processing limit. "
+                    "Please try asking your question again, and I'll do my best to help."
+                )
+
+            total_elapsed = elapsed_str(start_time)
+            if functions_called:
+                logger.info(f"{LINE}")
+                logger.info(
+                    f"{BOLD}Done{RESET} │ {len(functions_called)} function(s): "
+                    f"{', '.join(functions_called)} {total_elapsed}"
+                )
+            else:
+                logger.info(f"{DIM}  text-only response{RESET} {total_elapsed}")
 
             # Log warning if no functions were called for a product question
             if not functions_called and self._looks_like_product_question(request.message):
@@ -303,7 +396,7 @@ class ChatService:
                 )
 
         except Exception as e:
-            logger.error(f"Gemini API error: {e}", exc_info=True)
+            logger.error(f"LLM API error: {e}", exc_info=True)
             final_response = "I'm sorry, I encountered an error processing your request. Please try again."
             functions_called = []
 
@@ -311,7 +404,7 @@ class ChatService:
 
         # Extract sources and attachments from function results
         sources = self._extract_sources(functions_called, conversation.context)
-        attachments = self._extract_attachments(functions_called, conversation.context)
+        attachments = self._extract_attachments(function_results)
 
         # Save assistant message
         assistant_message = await conversation_crud.add_message(
@@ -320,7 +413,8 @@ class ChatService:
             role="assistant",
             content=final_response,
             agent_metadata={
-                "model": settings.LLM_MODEL,
+                "provider": settings.LLM_PROVIDER,
+                "model": settings.LLM_MODEL if settings.LLM_PROVIDER == "gemini" else settings.OPENAI_MODEL,
                 "functions_called": functions_called,
                 "execution_time_ms": execution_time,
             },
@@ -346,103 +440,38 @@ class ChatService:
             conversation_id=conversation.id
         )
 
-    async def _build_chat_history(self, conversation_id: UUID) -> List[types.Content]:
-        """Build chat history in Gemini format."""
+    async def _build_chat_history(self, conversation_id: UUID) -> List[Any]:
+        """Build chat history in provider format."""
         messages = await conversation_crud.get_recent_messages(
             self.db,
             conversation_id=conversation_id,
-            limit=20  # Last 20 messages for context
+            limit=20
         )
 
         history = []
         for msg in messages:
             role = "user" if msg.role.value == "user" else "model"
-            history.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part(text=msg.content)]
-                )
-            )
+            history.append(self.provider.build_content(role, msg.content))
 
         return history
 
-    async def _build_chat_history_excluding_last(self, conversation_id: UUID) -> List[types.Content]:
-        """Build chat history excluding the most recent message (to avoid duplicates).
-
-        This is used when we've just saved the user's message to the database
-        but will send it separately to the chat interface.
-        """
+    async def _build_chat_history_excluding_last(self, conversation_id: UUID) -> List[Any]:
+        """Build chat history excluding the most recent message (to avoid duplicates)."""
         messages = await conversation_crud.get_recent_messages(
             self.db,
             conversation_id=conversation_id,
-            limit=21  # Get one extra to account for excluding the last
+            limit=21
         )
 
-        # Exclude the most recent message (which we'll send separately)
         if messages:
-            messages = messages[1:]  # Skip the first (most recent) message
+            messages = messages[1:]
 
         history = []
         for msg in messages:
             role = "user" if msg.role.value == "user" else "model"
-            history.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part(text=msg.content)]
-                )
-            )
+            history.append(self.provider.build_content(role, msg.content))
 
         return history
-
-    def _has_function_call(self, response) -> bool:
-        """Check if response contains a function call."""
-        try:
-            if not response.candidates:
-                return False
-            content = response.candidates[0].content
-            if not content or not content.parts:
-                return False
-            parts = content.parts
-            return hasattr(parts[0], 'function_call') and parts[0].function_call and parts[0].function_call.name
-        except (AttributeError, IndexError):
-            return False
-
-    def _extract_function_call(self, response):
-        """Extract function call from response."""
-        try:
-            return response.candidates[0].content.parts[0].function_call
-        except (AttributeError, IndexError):
-            return None
-
-    def _extract_function_call_part(self, response):
-        """Extract the Part containing the function call (includes thought_signature)."""
-        try:
-            if not response.candidates:
-                return None
-            content = response.candidates[0].content
-            if not content or not content.parts:
-                return None
-            for part in content.parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    return part
-            return None
-        except (AttributeError, IndexError):
-            return None
-
-    def _extract_text(self, response) -> str:
-        """Extract text content from response."""
-        try:
-            if not response.candidates:
-                return ""
-            content = response.candidates[0].content
-            if not content or not content.parts:
-                return ""
-            for part in content.parts:
-                if hasattr(part, 'text') and part.text:
-                    return part.text
-            return ""
-        except (AttributeError, IndexError):
-            return ""
 
     def _generate_title(self, message: str) -> str:
         """Generate a title for a new conversation."""
@@ -489,13 +518,147 @@ class ChatService:
 
     def _extract_attachments(
         self,
-        functions_called: List[str],
-        context: Optional[Dict]
+        function_results: List[Dict[str, Any]]
     ) -> List[Attachment]:
-        """Extract attachments based on functions called."""
+        """Extract attachments from function results."""
         attachments = []
-        # Attachments like comparison tables would be generated here
-        # For now, return empty list - will be enhanced with actual data
+
+        for func_result in function_results:
+            func_name = func_result.get("name")
+            result = func_result.get("result", {})
+
+            # Extract reviewer cards from get_reviews_summary (NEW)
+            if func_name == "get_reviews_summary" and result.get("status") == "success":
+                reviewer_summaries = result.get("reviewer_summaries", [])
+
+                reviewer_cards = []
+                for summary in reviewer_summaries[:5]:
+                    platform = summary.get("platform", "unknown")
+                    card = {
+                        "reviewer_name": summary.get("reviewer_name", "Unknown"),
+                        "review_url": summary.get("url", ""),
+                        "review_type": "video" if platform == "youtube" else "blog",
+                        "summary": summary.get("summary", ""),
+                        "rating": None,  # No ratings in new flow
+                        "pros": result.get("common_pros", [])[:3],
+                        "cons": result.get("common_cons", [])[:3],
+                    }
+                    reviewer_cards.append(card)
+
+                if reviewer_cards:
+                    attachments.append(Attachment(
+                        type="reviewer_cards",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "cards": reviewer_cards
+                        }
+                    ))
+
+            # Note: check_product_cache card extraction removed to avoid duplicates
+            # when get_reviews_summary is also called (which has better summary data)
+
+            # Extract reviewer cards from gather_product_reviews (legacy)
+            elif func_name == "gather_product_reviews" and result.get("status") == "success":
+                reviews = result.get("reviews", [])
+
+                reviewer_cards = []
+                seen_reviewers = set()
+
+                for review in reviews:
+                    reviewer = review.get("reviewer", "Unknown")
+                    if reviewer in seen_reviewers:
+                        continue
+                    seen_reviewers.add(reviewer)
+
+                    card = {
+                        "reviewer_name": reviewer,
+                        "reviewer_id": review.get("reviewer_id"),
+                        "review_url": review.get("platform_url"),
+                        "review_type": review.get("review_type", "video"),
+                        "summary": review.get("summary", ""),
+                        "rating": review.get("overall_rating"),
+                        "pros": review.get("pros", [])[:3],
+                        "cons": review.get("cons", [])[:3],
+                    }
+                    reviewer_cards.append(card)
+
+                    if len(reviewer_cards) >= 5:
+                        break
+
+                if reviewer_cards:
+                    attachments.append(Attachment(
+                        type="reviewer_cards",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "cards": reviewer_cards
+                        }
+                    ))
+
+            # Extract reviewer cards from get_product_reviews (legacy)
+            elif func_name == "get_product_reviews" and result.get("reviews"):
+                reviews = result.get("reviews", [])
+
+                reviewer_cards = []
+                seen_reviewers = set()
+
+                for review in reviews:
+                    reviewer = review.get("reviewer", "Unknown")
+                    if reviewer in seen_reviewers:
+                        continue
+                    seen_reviewers.add(reviewer)
+
+                    card = {
+                        "reviewer_name": reviewer,
+                        "reviewer_id": review.get("reviewer_id"),
+                        "review_url": review.get("platform_url"),
+                        "review_type": review.get("review_type", "video"),
+                        "summary": review.get("summary", ""),
+                        "rating": review.get("overall_rating"),
+                        "pros": review.get("pros", [])[:3],
+                        "cons": review.get("cons", [])[:3],
+                    }
+                    reviewer_cards.append(card)
+
+                    if len(reviewer_cards) >= 5:
+                        break
+
+                if reviewer_cards:
+                    attachments.append(Attachment(
+                        type="reviewer_cards",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "cards": reviewer_cards
+                        }
+                    ))
+
+            # Extract marketplace listings from find_marketplace_listings
+            elif func_name == "find_marketplace_listings" and result.get("status") in ("success", "partial"):
+                listings = []
+                for item in result.get("amazon", []):
+                    listings.append({
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "price": item.get("price", ""),
+                        "description": item.get("seller", ""),
+                        "marketplace": "amazon",
+                    })
+                for item in result.get("ebay", []):
+                    listings.append({
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "price": item.get("price", ""),
+                        "description": item.get("condition", ""),
+                        "marketplace": "ebay",
+                    })
+                if listings:
+                    attachments.append(Attachment(
+                        type="marketplace_listings",
+                        data={
+                            "product_name": result.get("product_name", ""),
+                            "listings": listings,
+                        }
+                    ))
+
         return attachments
 
     async def _update_conversation_context(

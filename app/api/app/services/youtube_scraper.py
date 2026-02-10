@@ -8,8 +8,6 @@ from urllib.parse import urlparse, parse_qs
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -45,6 +43,7 @@ class YouTubeScraperService:
             return
 
         try:
+            from google import genai
             # Initialize the new genai client
             self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
             logger.info("YouTube scraper Gemini client initialized successfully")
@@ -130,6 +129,7 @@ Format your response as JSON with the following structure:
 """
 
         try:
+            from google.genai import types
             # Use the new SDK with Google Search grounding
             response = await self.client.aio.models.generate_content(
                 model=settings.LLM_MODEL,
@@ -138,7 +138,19 @@ Format your response as JSON with the following structure:
                     tools=[types.Tool(google_search=types.GoogleSearch())]
                 )
             )
-            response_text = response.text
+            response_text = response.text or ""
+
+            # Check if we got a valid response
+            if not response_text:
+                logger.warning(f"Empty response from Gemini for video scrape: {video_id}")
+                return {
+                    "video_id": video_id,
+                    "platform_url": video_url,
+                    "title": None,
+                    "channel_name": None,
+                    "raw_content": None,
+                    "error": "Empty response from Gemini"
+                }
 
             # Try to extract JSON from the response
             json_match = re.search(r'\{[\s\S]*\}', response_text)
@@ -282,7 +294,20 @@ Format your response as JSON:
                 model=settings.LLM_MODEL,
                 contents=analysis_prompt
             )
-            response_text = response.text
+            response_text = response.text or ""
+
+            # Check if we got a valid response
+            if not response_text:
+                logger.warning("Empty response from Gemini for review extraction")
+                return {
+                    "error": "Empty response from Gemini",
+                    "product_name": None,
+                    "overall_rating": None,
+                    "recommendation": None,
+                    "pros": [],
+                    "cons": [],
+                    "opinions": []
+                }
 
             # Extract JSON from response
             json_match = re.search(r'\{[\s\S]*\}', response_text)

@@ -9,20 +9,173 @@ logger = get_logger(__name__)
 
 
 # Function declarations for Gemini - defines the schema for each function
+# Primary review flow tools (NEW - simplified flow)
 FUNCTION_DECLARATIONS = [
+    # =========================================================================
+    # PRIMARY REVIEW FLOW TOOLS (Use these for the main review workflow)
+    # =========================================================================
+    {
+        "name": "check_product_cache",
+        "description": "Check if a product exists in the database with cached reviews. Use this FIRST when user asks about a product to check if we already have review data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search for (e.g., 'Samsung Galaxy S25', 'iPhone 15 Pro')"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
+        "name": "search_youtube_reviews",
+        "description": "Search for YouTube video review URLs for a product. Returns a list of YouTube URLs. Use this after check_product_cache returns no results.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search reviews for"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of YouTube URLs to return (default: 3)"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
+        "name": "ingest_youtube_review",
+        "description": "Analyze a YouTube video review using AI and store the detailed review in the database. Call this for EACH YouTube URL returned by search_youtube_reviews.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "video_url": {
+                    "type": "string",
+                    "description": "URL of the YouTube video to analyze and ingest"
+                },
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product being reviewed"
+                }
+            },
+            "required": ["video_url", "product_name"]
+        }
+    },
+    {
+        "name": "search_blog_reviews",
+        "description": "Search for blog review URLs for a product from tech publications. Returns a list of blog URLs. Use this to find written reviews.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search reviews for"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of blog URLs to return (default: 2)"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
+        "name": "ingest_blog_review",
+        "description": "Scrape and analyze a blog review, then store the detailed review in the database. Call this for EACH blog URL returned by search_blog_reviews.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL of the blog review to scrape and ingest"
+                },
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product being reviewed"
+                }
+            },
+            "required": ["url", "product_name"]
+        }
+    },
+    {
+        "name": "ingest_reviews_batch",
+        "description": "Ingest multiple YouTube and blog reviews in parallel. Much faster than calling ingest_youtube_review and ingest_blog_review individually. Pass all URLs at once and they will be processed concurrently.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product being reviewed"
+                },
+                "youtube_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of YouTube video URLs to ingest"
+                },
+                "blog_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of blog review URLs to ingest"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    {
+        "name": "get_reviews_summary",
+        "description": "Generate per-reviewer summaries and an overall product summary from stored reviews. Use this AFTER reviews have been ingested to present the final summary to the user.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to summarize reviews for"
+                },
+                "product_id": {
+                    "type": "integer",
+                    "description": "Product ID if known (alternative to product_name)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "find_marketplace_listings",
+        "description": "Search for where to buy a product on Amazon and eBay. Returns real-time listings with prices and links. Use when user asks 'where can I buy this' or about prices.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Name of the product to search for"
+                },
+                "count_per_marketplace": {
+                    "type": "integer",
+                    "description": "Number of listings to return per marketplace (default: 2)"
+                }
+            },
+            "required": ["product_name"]
+        }
+    },
+    # =========================================================================
+    # SECONDARY/LEGACY TOOLS (for additional functionality)
+    # =========================================================================
     {
         "name": "search_products",
-        "description": "Search for products by name, category, or keywords. Use this when the user wants to find products or asks about a type of product.",
+        "description": "Search for products in the database by name, category, or keywords.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query (product name, category, or keywords like 'best phone for gaming')"
+                    "description": "Search query (product name, category, or keywords)"
                 },
                 "category": {
                     "type": "string",
-                    "description": "Optional category filter (smartphones, laptops, headphones, tablets, smartwatches, cameras)",
+                    "description": "Optional category filter",
                     "enum": ["smartphones", "laptops", "headphones", "tablets", "smartwatches", "cameras", "monitors", "keyboards", "mice"]
                 },
                 "limit": {
@@ -35,7 +188,7 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "get_product_details",
-        "description": "Get detailed information about a specific product including specifications and metadata. Use when the user asks about a specific product's features or specs.",
+        "description": "Get detailed information about a specific product including specifications.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -49,7 +202,7 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "get_product_reviews",
-        "description": "Get reviews for a product from trusted tech reviewers (YouTube, blogs). Use when the user asks what reviewers think about a product.",
+        "description": "Get raw reviews for a product from the database.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -66,22 +219,8 @@ FUNCTION_DECLARATIONS = [
         }
     },
     {
-        "name": "get_review_consensus",
-        "description": "Get aggregated consensus from all reviewers about a product. Shows what reviewers agree and disagree on for each aspect (camera, battery, display, etc.). Use when user wants to know the general opinion about a product.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_id": {
-                    "type": "integer",
-                    "description": "The product ID"
-                }
-            },
-            "required": ["product_id"]
-        }
-    },
-    {
         "name": "compare_products",
-        "description": "Compare multiple products side by side based on reviews and specs. Use when the user asks to compare products or wants to know which is better.",
+        "description": "Compare multiple products side by side based on reviews.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -93,70 +232,15 @@ FUNCTION_DECLARATIONS = [
                 "aspects": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional: specific aspects to compare (e.g., battery, camera, performance, display, build_quality)"
+                    "description": "Specific aspects to compare (e.g., battery, camera, performance)"
                 }
             },
             "required": ["product_ids"]
         }
     },
     {
-        "name": "scrape_marketplace_listings",
-        "description": "Scrape current prices and availability from Amazon and eBay for a product. Use this when user asks where to buy a product and you need fresh marketplace data. This will search marketplaces and store the listings.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_name": {
-                    "type": "string",
-                    "description": "Name of the product to search for (e.g., 'iPhone 15 Pro', 'Sony WH-1000XM5')"
-                },
-                "product_id": {
-                    "type": "integer",
-                    "description": "Optional product ID to associate listings with"
-                },
-                "marketplaces": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Marketplaces to search (default: ['amazon', 'ebay'])"
-                },
-                "country": {
-                    "type": "string",
-                    "description": "Country code (default: US)",
-                    "enum": ["US", "UK", "DE", "FR", "JP", "AU", "CA"]
-                }
-            },
-            "required": ["product_name"]
-        }
-    },
-    {
-        "name": "find_marketplace_listings",
-        "description": "Find where to buy a product with current prices from Amazon, eBay, and other marketplaces. Automatically scrapes fresh listings if none exist or data is stale (>24 hours). Use when the user asks about prices or where to buy.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_id": {
-                    "type": "integer",
-                    "description": "The product ID (use this if you have the ID)"
-                },
-                "product_name": {
-                    "type": "string",
-                    "description": "Product name to search for (use this if you don't have product_id)"
-                },
-                "country": {
-                    "type": "string",
-                    "description": "Country code for marketplace selection (default: US)",
-                    "enum": ["US", "UK", "DE", "FR", "JP", "AU", "CA", "ID", "SG", "MY"]
-                },
-                "force_refresh": {
-                    "type": "boolean",
-                    "description": "If true, scrape fresh listings even if cached data exists"
-                }
-            },
-            "required": []
-        }
-    },
-    {
         "name": "get_reviewer_info",
-        "description": "Get information about a specific tech reviewer including their channel/blog and expertise. Use when user asks about a reviewer.",
+        "description": "Get information about a specific tech reviewer.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -166,114 +250,6 @@ FUNCTION_DECLARATIONS = [
                 }
             },
             "required": ["reviewer_id"]
-        }
-    },
-    {
-        "name": "semantic_search",
-        "description": "Search across all review content using natural language. Good for specific questions about products that may not be captured by simple keyword search. Use for questions like 'which phone has the best low-light camera?' or 'what do reviewers say about iPhone battery life?'",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Natural language search query"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of results (default 10)"
-                }
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "ingest_youtube_review",
-        "description": "Ingest a YouTube video review. Use this when the user provides a YouTube URL and wants to add that review to the database.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "video_url": {
-                    "type": "string",
-                    "description": "URL of the YouTube video to ingest"
-                },
-                "product_id": {
-                    "type": "integer",
-                    "description": "Optional product ID if known"
-                }
-            },
-            "required": ["video_url"]
-        }
-    },
-    {
-        "name": "ingest_blog_review",
-        "description": "Ingest a blog review from a URL. Use this when the user provides a blog URL and wants to add that review to the database.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "URL of the blog review to ingest"
-                },
-                "product_id": {
-                    "type": "integer",
-                    "description": "Optional product ID if known"
-                }
-            },
-            "required": ["url"]
-        }
-    },
-    {
-        "name": "gather_product_reviews",
-        "description": "Gather and ingest product reviews from YouTube and tech blogs. Use this when the user asks about a product and you need to find reviews. This function searches for reviews, ingests them, and returns aggregated data.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_name": {
-                    "type": "string",
-                    "description": "Name of the product to gather reviews for (e.g., 'iPhone 15 Pro', 'Samsung Galaxy S24')"
-                },
-                "force_refresh": {
-                    "type": "boolean",
-                    "description": "If true, fetch new reviews even if cached data exists (default: false)"
-                }
-            },
-            "required": ["product_name"]
-        }
-    },
-    {
-        "name": "search_youtube_reviews",
-        "description": "Search for YouTube video reviews of a product. Returns a list of YouTube URLs from trusted tech reviewers. Use this when you specifically need YouTube review URLs.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_name": {
-                    "type": "string",
-                    "description": "Name of the product to search reviews for"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of URLs to return (default: 5)"
-                }
-            },
-            "required": ["product_name"]
-        }
-    },
-    {
-        "name": "search_blog_reviews",
-        "description": "Search for tech blog reviews of a product. Returns a list of blog URLs from trusted tech publications (The Verge, CNET, TechRadar, etc.). Use this when you specifically need written blog review URLs.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_name": {
-                    "type": "string",
-                    "description": "Name of the product to search reviews for"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of URLs to return (default: 5)"
-                }
-            },
-            "required": ["product_name"]
         }
     }
 ]
@@ -325,6 +301,8 @@ async def execute_function(
 
 # Import function implementations to register them
 from app.functions import products, reviews, search, comparison, marketplace, reviewers, ingestion, gather
+# Import new simplified review tools
+from app.functions import review_tools
 
 # Ensure all functions are registered
 __all__ = ["FUNCTION_DECLARATIONS", "execute_function", "register_function"]

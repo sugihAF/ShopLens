@@ -11,25 +11,41 @@ services:
       dockerfile: Dockerfile
     container_name: shoplens-api-dev
     restart: unless-stopped
+    tty: true
     ports:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://shoplens:shoplens@postgres:5432/shoplens
       - REDIS_URL=redis://redis:6379/0
-      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key-not-for-production}
+      # LLM provider: "gemini" or "openai"
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
       - LLM_MODEL=${LLM_MODEL:-gemini-3-flash-preview}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.2}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-models/text-embedding-004}
+      # Rate limiting
+      - RATE_LIMIT_CHAT=${RATE_LIMIT_CHAT:-10/minute}
+      - RATE_LIMIT_AUTH=${RATE_LIMIT_AUTH:-5/minute}
+      # Cache TTLs
+      - CACHE_PRODUCT_TTL=${CACHE_PRODUCT_TTL:-3600}
+      - CACHE_FIRECRAWL_TTL=${CACHE_FIRECRAWL_TTL:-1800}
+      - CACHE_SUMMARY_TTL=${CACHE_SUMMARY_TTL:-7200}
       - ENVIRONMENT=development
       - DEBUG=true
+      - FORCE_COLOR=1
       - CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost:8080
     volumes:
       # Mount source code for hot reload
       - ./app/api/app:/app/app:ro
       - ./app/api/alembic:/app/alembic:ro
       - ./app/api/alembic.ini:/app/alembic.ini:ro
+      - ./app/api/run_pipeline.py:/app/run_pipeline.py:ro
     # Override entrypoint to use --reload flag
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
@@ -50,20 +66,25 @@ services:
       - shoplens-network-dev
 
   # =============================================================================
-  # React Frontend (Development - serves static files)
+  # React Frontend (Development - Vite dev server with HMR)
   # =============================================================================
   web:
     build:
       context: ./app/web/landing-page
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: shoplens-web-dev
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "5173:5173"
     volumes:
-      # Mount static files for quick updates (rebuild not needed for content changes)
-      - ./app/web/landing-page/index.html:/usr/share/nginx/html/index.html:ro
-      - ./app/web/landing-page/assets:/usr/share/nginx/html/assets:ro
+      # Mount source code for hot module replacement
+      - ./app/web/landing-page/src:/app/src:ro
+      - ./app/web/landing-page/index.html:/app/index.html:ro
+      - ./app/web/landing-page/vite.config.ts:/app/vite.config.ts:ro
+      - ./app/web/landing-page/tsconfig.json:/app/tsconfig.json:ro
+      - ./app/web/landing-page/tailwind.config.js:/app/tailwind.config.js:ro
+    environment:
+      - VITE_API_URL=http://api:8000
     depends_on:
       - api
     networks:

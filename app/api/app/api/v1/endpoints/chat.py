@@ -1,8 +1,11 @@
 """Chat endpoint - main AI interaction point."""
 
+import asyncio
+import json
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -18,15 +21,19 @@ from app.schemas.common import Message
 from app.crud.conversation import conversation_crud
 from app.core.security import get_current_user_id
 from app.services.chat_service import ChatService
+from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.rate_limit import limiter
 
 logger = get_logger(__name__)
 router = APIRouter()
 
 
 @router.post("", response_model=ChatResponse)
+@limiter.limit(settings.RATE_LIMIT_CHAT)
 async def send_chat_message(
-    request: ChatRequest,
+    request: Request,
+    chat_request: ChatRequest,
     db: AsyncSession = Depends(get_db),
     user_id: Optional[int] = Depends(get_current_user_id)
 ):
@@ -45,7 +52,7 @@ async def send_chat_message(
     """
     try:
         chat_service = ChatService(db)
-        response = await chat_service.process_message(request, user_id=user_id)
+        response = await chat_service.process_message(chat_request, user_id=user_id)
         return response
 
     except Exception as e:
@@ -54,6 +61,76 @@ async def send_chat_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process chat message. Please try again."
         )
+
+
+@router.post("/stream")
+@limiter.limit(settings.RATE_LIMIT_CHAT)
+async def stream_chat_message(
+    request: Request,
+    chat_request: ChatRequest,
+    user_id: Optional[int] = Depends(get_current_user_id),
+):
+    """
+    Stream a chat message with real-time progress events via SSE.
+
+    Sends progress events as each pipeline function starts/completes,
+    then sends the final complete response.
+
+    Note: This endpoint manages its own database session inside the
+    generator rather than using Depends(get_db), because FastAPI closes
+    dependency-injected resources when the endpoint returns — before
+    StreamingResponse finishes iterating.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_progress(event: dict):
+        await queue.put(event)
+
+    async def run_chat():
+        """Run process_message with its own DB session inside the task."""
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            try:
+                chat_service = ChatService(db)
+                result = await chat_service.process_message(
+                    chat_request, user_id=user_id, on_progress=on_progress
+                )
+                await queue.put({"type": "complete", "data": result.model_dump(mode="json")})
+            except Exception as e:
+                logger.error(f"Stream chat error: {e}", exc_info=True)
+                await queue.put({"type": "error", "message": "Failed to process chat message. Please try again."})
+
+    async def generate():
+        task = asyncio.create_task(run_chat())
+
+        while not task.done():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                yield f"data: {json.dumps(event)}\n\n"
+            except asyncio.TimeoutError:
+                # Send SSE comment as keepalive to prevent proxy/browser timeouts
+                yield ": keepalive\n\n"
+
+        # Drain any remaining queued events
+        while not queue.empty():
+            event = await queue.get()
+            yield f"data: {json.dumps(event)}\n\n"
+
+        # Safety net: if the task raised an unhandled exception that wasn't
+        # caught inside run_chat(), ensure the client gets an error event.
+        if task.exception():
+            logger.error(f"Unhandled stream task error: {task.exception()}", exc_info=task.exception())
+            yield f'data: {json.dumps({"type": "error", "message": "An unexpected error occurred. Please try again."})}\n\n'
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering for SSE
+        },
+    )
 
 
 @router.get("/conversations", response_model=ConversationListResponse)
