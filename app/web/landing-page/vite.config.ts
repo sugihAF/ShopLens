@@ -23,6 +23,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    allowedHosts: ['shoplens.net'],
     watch: {
       usePolling: true,
       interval: 1000,
