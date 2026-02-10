@@ -16,9 +16,8 @@ const footerLinks = [
 ]
 
 const socialLinks = [
-  { icon: <XIcon className="w-4 h-4" />, label: 'Twitter', href: '#' },
-  { icon: <GitHubIcon className="w-4 h-4" />, label: 'GitHub', href: '#' },
-  { icon: <DiscordIcon className="w-4 h-4" />, label: 'Discord', href: '#' },
+  { icon: <XIcon className="w-4 h-4" />, label: 'Twitter', href: 'https://x.com/sugihaf1' },
+  { icon: <GitHubIcon className="w-4 h-4" />, label: 'GitHub', href: 'https://github.com/sugihAF' },
 ]
 
 export function Footer() {
