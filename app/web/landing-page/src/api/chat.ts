@@ -4,7 +4,7 @@ const API_BASE_URL = '/api/v1'
 
 export async function sendChatMessage(request: ChatRequest): Promise<ApiChatResponse> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 180_000) // 3 min timeout
+  const timeout = setTimeout(() => controller.abort(), 300_000) // 5 min
 
   try {
     const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -40,7 +40,7 @@ export async function sendChatMessageStream(
   onProgress: (step: ProgressStep) => void,
 ): Promise<ApiChatResponse> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 180_000) // 3 min timeout
+  const timeout = setTimeout(() => controller.abort(), 300_000) // 5 min — review ingestion can take 2-3 min
 
   try {
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -63,39 +63,48 @@ export async function sendChatMessageStream(
     let buffer = ''
     let result: ApiChatResponse | null = null
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      // Keep the last potentially incomplete line in the buffer
-      buffer = lines.pop() || ''
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        // Keep the last potentially incomplete line in the buffer
+        buffer = lines.pop() || ''
 
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data: ')) continue
 
-        const jsonStr = trimmed.slice(6)
-        let event: { type: string; step?: string; label?: string; status?: string; data?: ApiChatResponse; message?: string }
-        try {
-          event = JSON.parse(jsonStr)
-        } catch {
-          continue
+          const jsonStr = trimmed.slice(6)
+          let event: { type: string; step?: string; label?: string; status?: string; data?: ApiChatResponse; message?: string }
+          try {
+            event = JSON.parse(jsonStr)
+          } catch {
+            continue
+          }
+
+          if (event.type === 'progress') {
+            onProgress({
+              step: event.step!,
+              label: event.label!,
+              status: event.status as 'running' | 'done',
+            })
+          } else if (event.type === 'complete') {
+            result = event.data!
+          } else if (event.type === 'error') {
+            throw new Error(event.message || 'Stream error')
+          }
         }
 
-        if (event.type === 'progress') {
-          onProgress({
-            step: event.step!,
-            label: event.label!,
-            status: event.status as 'running' | 'done',
-          })
-        } else if (event.type === 'complete') {
-          result = event.data!
-        } else if (event.type === 'error') {
-          throw new Error(event.message || 'Stream error')
-        }
+        // Once we have the complete response, stop reading immediately
+        // Don't wait for the stream to close — resolves the mutation right away
+        if (result) break
       }
+    } finally {
+      // Cancel the reader to clean up the connection
+      reader.cancel().catch(() => {})
     }
 
     if (!result) {

@@ -8,8 +8,6 @@ from urllib.parse import urlparse, parse_qs
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -45,6 +43,7 @@ class YouTubeScraperService:
             return
 
         try:
+            from google import genai
             # Initialize the new genai client
             self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
             logger.info("YouTube scraper Gemini client initialized successfully")
@@ -130,6 +129,7 @@ Format your response as JSON with the following structure:
 """
 
         try:
+            from google.genai import types
             # Use the new SDK with Google Search grounding
             response = await self.client.aio.models.generate_content(
                 model=settings.LLM_MODEL,

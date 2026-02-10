@@ -6,8 +6,6 @@ from datetime import datetime, timezone, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from google import genai
-from google.genai import types
 
 from app.functions.registry import register_function
 from app.core.config import settings
@@ -255,10 +253,12 @@ async def search_youtube_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict
 
     logger.info(f"Searching YouTube reviews for: {product_name}")
 
-    # Initialize Gemini client
+    # Initialize Gemini client (required for Google Search grounding)
     if not settings.GEMINI_API_KEY:
-        return {"error": "GEMINI_API_KEY not configured"}
+        return {"error": "GEMINI_API_KEY not configured — Google Search grounding requires Gemini"}
 
+    from google import genai
+    from google.genai import types
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     # Search prompt focusing on tech reviewers
@@ -389,10 +389,12 @@ async def search_blog_reviews(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
 
     logger.info(f"Searching blog reviews for: {product_name}")
 
-    # Initialize Gemini client
+    # Initialize Gemini client (required for Google Search grounding)
     if not settings.GEMINI_API_KEY:
-        return {"error": "GEMINI_API_KEY not configured"}
+        return {"error": "GEMINI_API_KEY not configured — Google Search grounding requires Gemini"}
 
+    from google import genai
+    from google.genai import types
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     # Search prompt focusing on tech blogs

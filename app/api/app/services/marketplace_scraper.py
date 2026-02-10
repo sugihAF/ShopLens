@@ -8,8 +8,6 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -78,6 +76,7 @@ class MarketplaceScraperService:
         # Initialize Gemini client
         if settings.GEMINI_API_KEY:
             try:
+                from google import genai
                 self.genai_client = genai.Client(api_key=settings.GEMINI_API_KEY)
                 logger.info("Marketplace scraper Gemini client initialized")
             except Exception as e:
@@ -138,6 +137,7 @@ Return your response as a JSON object:
 Only include real product listings. Do not make up data."""
 
         try:
+            from google.genai import types
             response = await self.genai_client.aio.models.generate_content(
                 model=settings.LLM_MODEL,
                 contents=search_prompt,
@@ -242,6 +242,7 @@ Return your response as a JSON object:
 Only include real product listings. Do not make up data."""
 
         try:
+            from google.genai import types
             response = await self.genai_client.aio.models.generate_content(
                 model=settings.LLM_MODEL,
                 contents=search_prompt,

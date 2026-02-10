@@ -21,8 +21,6 @@ from urllib.parse import urlparse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-from google import genai
-from google.genai import types
 
 from app.functions.registry import register_function
 from app.core.config import settings
@@ -41,11 +39,53 @@ logger = get_logger(__name__)
 FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
 
 
+def _is_gemini_available() -> bool:
+    """Check if Gemini API is configured (needed for Google Search grounding)."""
+    return bool(settings.GEMINI_API_KEY)
+
+
 def _get_gemini_client():
-    """Get Gemini client instance."""
+    """Get Gemini client instance (required for Google Search grounding features)."""
+    from google import genai
     if not settings.GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not configured")
+        raise RuntimeError("GEMINI_API_KEY not configured — Google Search grounding requires Gemini")
     return genai.Client(api_key=settings.GEMINI_API_KEY)
+
+
+async def _llm_generate_text(prompt: str, timeout: int = 90, temperature: float = 0.3) -> str:
+    """Generate text using the configured LLM provider (works with both Gemini and OpenAI)."""
+    from app.services.llm_service import get_llm_provider
+    provider = get_llm_provider()
+    contents = [provider.build_content("user", prompt)]
+    config = provider.build_config(
+        system_instruction="", tools=None,
+        temperature=temperature, max_output_tokens=4096,
+    )
+    response = await asyncio.wait_for(provider.generate(contents, config), timeout=timeout)
+    return provider.extract_text(response)
+
+
+async def _scrape_url_with_firecrawl(url: str) -> Optional[str]:
+    """Scrape a URL with Firecrawl and return markdown content.
+
+    Uses asyncio.to_thread to avoid blocking the event loop — Firecrawl's
+    scrape() is synchronous and can take 10-30 seconds.
+    """
+    if not settings.FIRECRAWL_API_KEY:
+        return None
+    try:
+        from firecrawl import FirecrawlApp
+        firecrawl = FirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
+        scrape_result = await asyncio.to_thread(
+            lambda: firecrawl.scrape(url, formats=['markdown'])
+        )
+        if hasattr(scrape_result, 'markdown'):
+            return scrape_result.markdown
+        elif isinstance(scrape_result, dict):
+            return scrape_result.get("markdown", "")
+    except Exception as e:
+        logger.warning(f"Firecrawl scrape failed for {url}: {e}")
+    return None
 
 
 # Default timeout for Gemini API calls (60 seconds)
@@ -457,10 +497,26 @@ async def ingest_youtube_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[
         }
 
     try:
-        client = _get_gemini_client()
+        # Build the analysis prompt
+        youtube_json_schema = """{{
+    "video_title": "Exact title of this video",
+    "channel_name": "Name of the YouTube channel",
+    "reviewer_description": "Brief description of the reviewer",
+    "detailed_review": "The comprehensive detailed review content (multiple paragraphs)",
+    "pros": ["Pro 1", "Pro 2", ...],
+    "cons": ["Con 1", "Con 2", ...],
+    "verdict": "The reviewer's final verdict",
+    "product_name": "Exact product name reviewed in this video",
+    "product_brand": "Brand name",
+    "product_category": "smartphones/laptops/headphones/etc"
+}}"""
 
-        # Ask Gemini to analyze the video — emphasis on THIS SPECIFIC video
-        prompt = f"""Go to this exact YouTube video URL and analyze it: {video_url}
+        if _is_gemini_available():
+            # Path A: Gemini with Google Search grounding (can browse the video)
+            from google.genai import types
+            client = _get_gemini_client()
+
+            prompt = f"""Go to this exact YouTube video URL and analyze it: {video_url}
 
 I need a detailed review analysis of THIS SPECIFIC VIDEO. Do not confuse it with other videos.
 The video should be a review of or related to "{product_name}".
@@ -490,38 +546,65 @@ Write at least 3-4 paragraphs for the detailed review content.
 IMPORTANT: Only report what is actually said in THIS video at {video_url}. Do not mix in content from other videos.
 
 Return as JSON:
-{{
-    "video_title": "Exact title of this video",
-    "channel_name": "Name of the YouTube channel",
-    "reviewer_description": "Brief description of the reviewer",
-    "detailed_review": "The comprehensive detailed review content (multiple paragraphs)",
-    "pros": ["Pro 1", "Pro 2", ...],
-    "cons": ["Con 1", "Con 2", ...],
-    "verdict": "The reviewer's final verdict",
-    "product_name": "Exact product name reviewed in this video",
-    "product_brand": "Brand name",
-    "product_category": "smartphones/laptops/headphones/etc"
-}}"""
+{youtube_json_schema}"""
 
-        response = await _call_gemini_with_retry(
-            client,
-            model=settings.LLM_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.3,
-                max_output_tokens=4096
-            ),
-            timeout=120,  # 120 second timeout for video analysis
-            max_retries=1
-        )
+            response = await _call_gemini_with_retry(
+                client,
+                model=settings.LLM_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.3,
+                    max_output_tokens=4096
+                ),
+                timeout=120,
+                max_retries=1
+            )
+            response_text = response.text or ""
 
-        response_text = response.text or ""
+        else:
+            # Path B: Scrape YouTube page with Firecrawl, then analyze with any LLM
+            scraped = await _scrape_url_with_firecrawl(video_url)
+            if not scraped:
+                return {
+                    "status": "error",
+                    "error": "Could not scrape YouTube video. Ensure FIRECRAWL_API_KEY is set.",
+                    "url": video_url,
+                }
+
+            prompt = f"""Analyze this YouTube video page content. The video is a review of "{product_name}".
+
+Page content:
+{scraped[:30000]}
+
+Please provide:
+
+1. **Video Information**: The exact title, the channel name, and a brief description of the reviewer.
+
+2. **Detailed Review Content**: Write a comprehensive summary of what the reviewer says. Include:
+   - Design and build quality observations
+   - Display/screen analysis
+   - Performance and speed impressions
+   - Camera quality (if applicable)
+   - Battery life experience
+   - Software and features
+   - Any unique insights or testing they performed
+
+3. **Pros and Cons**: List the main advantages and disadvantages mentioned.
+
+4. **Final Verdict**: The reviewer's overall conclusion and recommendation.
+
+Be thorough and detailed. Write at least 3-4 paragraphs for the detailed review content.
+
+Return as JSON:
+{youtube_json_schema}"""
+
+            response_text = await _llm_generate_text(prompt, timeout=120)
 
         if not response_text:
             return {
                 "status": "error",
-                "error": "Empty response from Gemini",
+                "error": "Empty response from LLM",
                 "url": video_url
             }
 
@@ -542,7 +625,7 @@ Return as JSON:
                 raise ValueError("No JSON found in response")
 
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse Gemini response: {e}")
+            logger.error(f"Failed to parse LLM response: {e}")
             return {
                 "status": "error",
                 "error": f"Failed to parse response: {e}",
@@ -748,32 +831,20 @@ async def ingest_blog_review(db: AsyncSession, args: Dict[str, Any]) -> Dict[str
         }
 
     try:
-        # Try to scrape with Firecrawl if available
-        content = None
+        blog_json_schema = """{{
+    "article_title": "Title of the article",
+    "publication_name": "Name of the publication",
+    "author": "Author name if available",
+    "detailed_review": "The comprehensive detailed review content",
+    "pros": ["Pro 1", "Pro 2", ...],
+    "cons": ["Con 1", "Con 2", ...],
+    "verdict": "The reviewer's final verdict",
+    "product_name": "Exact product name",
+    "product_brand": "Brand name",
+    "product_category": "smartphones/laptops/headphones/etc"
+}}"""
 
-        if settings.FIRECRAWL_API_KEY:
-            try:
-                from firecrawl import FirecrawlApp
-                firecrawl = FirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
-                scrape_result = firecrawl.scrape(url, formats=['markdown'])
-
-                if hasattr(scrape_result, 'markdown'):
-                    content = scrape_result.markdown
-                elif isinstance(scrape_result, dict):
-                    content = scrape_result.get("markdown", "")
-
-            except Exception as e:
-                log_warn(logger, f"Firecrawl scrape failed, falling back to Gemini: {e}")
-
-        client = _get_gemini_client()
-
-        # Use Gemini to analyze (with or without scraped content)
-        if content:
-            prompt = f"""Analyze this blog review content about "{product_name}":
-
-{content[:30000]}
-
-Please provide a detailed review analysis including:
+        blog_analysis_instructions = f"""Please provide a detailed review analysis including:
 
 1. **Publication Info**: Name of the publication and author (if available).
 
@@ -793,76 +864,57 @@ Please provide a detailed review analysis including:
 Be thorough and detailed. Write at least 3-4 paragraphs.
 
 Return as JSON:
-{{
-    "article_title": "Title of the article",
-    "publication_name": "Name of the publication",
-    "author": "Author name if available",
-    "detailed_review": "The comprehensive detailed review content",
-    "pros": ["Pro 1", "Pro 2", ...],
-    "cons": ["Con 1", "Con 2", ...],
-    "verdict": "The reviewer's final verdict",
-    "product_name": "Exact product name",
-    "product_brand": "Brand name",
-    "product_category": "smartphones/laptops/headphones/etc"
-}}"""
-        else:
-            # No Firecrawl content, ask Gemini to find info about the article
+{blog_json_schema}"""
+
+        # Try to scrape with Firecrawl
+        content = await _scrape_url_with_firecrawl(url)
+
+        if content:
+            # Content available — use any LLM provider (no grounding needed)
+            prompt = f"""Analyze this blog review content about "{product_name}":
+
+{content[:30000]}
+
+{blog_analysis_instructions}"""
+
+            response_text = await _llm_generate_text(prompt, timeout=90)
+
+        elif _is_gemini_available():
+            # No content, fall back to Gemini with Google Search grounding
+            from google.genai import types
+            client = _get_gemini_client()
+
             prompt = f"""Analyze this blog review: {url}
 
 This is a review of "{product_name}".
 
-Please provide a detailed review analysis including:
+{blog_analysis_instructions}"""
 
-1. **Publication Info**: Name of the publication and author.
+            response = await _call_gemini_with_retry(
+                client,
+                model=settings.LLM_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.3,
+                    max_output_tokens=4096
+                ),
+                timeout=90,
+                max_retries=1
+            )
+            response_text = response.text or ""
 
-2. **Detailed Review Content**: Write a comprehensive summary of what the review says. Include:
-   - Design and build quality observations
-   - Display/screen analysis
-   - Performance impressions
-   - Camera quality (if applicable)
-   - Battery life experience
-   - Software and features
-   - Value for money assessment
-
-3. **Pros and Cons**: List the main advantages and disadvantages mentioned.
-
-4. **Final Verdict**: The reviewer's overall conclusion.
-
-Be thorough and detailed. Write at least 3-4 paragraphs.
-
-Return as JSON:
-{{
-    "article_title": "Title of the article",
-    "publication_name": "Name of the publication",
-    "author": "Author name if available",
-    "detailed_review": "The comprehensive detailed review content",
-    "pros": ["Pro 1", "Pro 2", ...],
-    "cons": ["Con 1", "Con 2", ...],
-    "verdict": "The reviewer's final verdict",
-    "product_name": "Exact product name",
-    "product_brand": "Brand name",
-    "product_category": "smartphones/laptops/headphones/etc"
-}}"""
-
-        response = await _call_gemini_with_retry(
-            client,
-            model=settings.LLM_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())] if not content else None,
-                temperature=0.3,
-                max_output_tokens=4096
-            ),
-            timeout=90,  # 90 second timeout for blog analysis
-            max_retries=1
-        )
-
-        response_text = response.text or ""
+        else:
+            return {
+                "status": "error",
+                "error": "Could not scrape blog content. Ensure FIRECRAWL_API_KEY is set.",
+                "url": url,
+            }
 
         if not response_text:
             return {
                 "status": "error",
-                "error": "Empty response from Gemini",
+                "error": "Empty response from LLM",
                 "url": url
             }
 
@@ -882,7 +934,7 @@ Return as JSON:
                 raise ValueError("No JSON found in response")
 
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse Gemini response: {e}")
+            logger.error(f"Failed to parse LLM response: {e}")
             return {
                 "status": "error",
                 "error": f"Failed to parse response: {e}",
@@ -1132,7 +1184,7 @@ async def get_reviews_summary(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
         }
 
     try:
-        client = _get_gemini_client()
+        from app.services.llm_service import get_llm_provider
 
         # Build context from all reviews
         reviews_context = []
@@ -1148,7 +1200,6 @@ URL: {review.platform_url}
 
         all_reviews_text = "\n---\n".join(reviews_context)
 
-        # Ask Gemini to generate summaries
         prompt = f"""Based on the following reviews of "{product.name}", provide:
 
 1. **Per-Reviewer Summaries**: For each reviewer, write a detailed paragraph (at least 4-5 sentences) summarizing their key opinions, what they liked, what they didn't like, and their overall impression.
@@ -1177,18 +1228,21 @@ Return as JSON:
     "common_cons": ["Common criticism 1", "Common criticism 2"]
 }}"""
 
-        response = await _call_gemini_with_timeout(
-            client,
-            model=settings.LLM_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.4,
-                max_output_tokens=4096
-            ),
-            timeout=90  # 90 second timeout for summary generation
+        # Use provider-agnostic LLM call (works with both Gemini and OpenAI)
+        provider = get_llm_provider()
+        contents = [provider.build_content("user", prompt)]
+        config = provider.build_config(
+            system_instruction="",
+            tools=None,
+            temperature=0.4,
+            max_output_tokens=4096,
+        )
+        response = await asyncio.wait_for(
+            provider.generate(contents, config),
+            timeout=90,
         )
 
-        response_text = response.text or ""
+        response_text = provider.extract_text(response)
 
         # Parse response
         try:

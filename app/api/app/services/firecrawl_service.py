@@ -8,8 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from firecrawl import FirecrawlApp
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -91,6 +89,7 @@ class FirecrawlService:
         # Initialize Gemini client for extraction
         if settings.GEMINI_API_KEY:
             try:
+                from google import genai
                 self.genai_client = genai.Client(api_key=settings.GEMINI_API_KEY)
                 logger.info("Gemini client initialized for extraction")
             except Exception as e:
@@ -151,6 +150,7 @@ class FirecrawlService:
 
         # Step 2: Extract structured data using Gemini
         try:
+            from google.genai import types
             extraction_prompt = EXTRACTION_PROMPT.format(content=content[:50000])  # Limit content size
             response = await self.genai_client.aio.models.generate_content(
                 model=settings.LLM_MODEL,

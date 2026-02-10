@@ -48,17 +48,12 @@ async def _vector_search(query: str, limit: int) -> Dict[str, Any]:
     """
     try:
         from qdrant_client import QdrantClient
-        from qdrant_client.models import Filter
-        import google.generativeai as genai
+        from app.services.embedding_service import embedding_service
 
-        # Generate embedding for query (wrap synchronous call)
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        embedding_result = await asyncio.to_thread(
-            genai.embed_content,
-            model=settings.EMBEDDING_MODEL,
-            content=query
-        )
-        query_vector = embedding_result['embedding']
+        # Generate embedding for query using the configured provider
+        query_vector = await embedding_service.generate_embedding(query)
+        if not query_vector:
+            raise RuntimeError("Embedding service not available")
 
         # Connect to Qdrant
         client = QdrantClient(

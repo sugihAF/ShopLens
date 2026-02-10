@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "models/text-embedding-004"
     OPENAI_API_KEY: str = Field(default="")
     OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # YouTube API (for ingestion)
     YOUTUBE_API_KEY: str = Field(default="")

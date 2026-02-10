@@ -109,14 +109,28 @@ async def stream_chat_message(
                 event = await asyncio.wait_for(queue.get(), timeout=1.0)
                 yield f"data: {json.dumps(event)}\n\n"
             except asyncio.TimeoutError:
-                continue
+                # Send SSE comment as keepalive to prevent proxy/browser timeouts
+                yield ": keepalive\n\n"
 
         # Drain any remaining queued events
         while not queue.empty():
             event = await queue.get()
             yield f"data: {json.dumps(event)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+        # Safety net: if the task raised an unhandled exception that wasn't
+        # caught inside run_chat(), ensure the client gets an error event.
+        if task.exception():
+            logger.error(f"Unhandled stream task error: {task.exception()}", exc_info=task.exception())
+            yield f'data: {json.dumps({"type": "error", "message": "An unexpected error occurred. Please try again."})}\n\n'
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering for SSE
+        },
+    )
 
 
 @router.get("/conversations", response_model=ConversationListResponse)

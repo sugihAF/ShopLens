@@ -27,6 +27,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-gemini-3-flash-preview}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.2}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-models/text-embedding-004}
       # Rate limiting
       - RATE_LIMIT_CHAT=${RATE_LIMIT_CHAT:-10/minute}
