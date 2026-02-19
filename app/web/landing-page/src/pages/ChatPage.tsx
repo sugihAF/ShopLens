@@ -4,7 +4,10 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChat } from '@/hooks'
 import { formatMarkdown } from '@/lib/utils'
 import { LogoIcon, SendIcon } from '@/components/ui'
-import type { ChatMessage, ReviewerCard, MarketplaceListing, Attachment, ProgressStep } from '@/types'
+import type {
+  ChatMessage, ReviewerCard, MarketplaceListing, Attachment, ProgressStep,
+  SemanticSearchResult, AspectSentiment, ComparisonProduct
+} from '@/types'
 
 // Icons
 function ArrowLeftIcon({ className }: { className?: string }) {
@@ -661,6 +664,324 @@ function MarketplaceCards({ listings, productName }: { listings: MarketplaceList
   )
 }
 
+// Search icon for semantic search results
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
+// Semantic search results component
+function SemanticSearchResults({ results, query, total }: { results: SemanticSearchResult[]; query: string; total: number }) {
+  if (!results || results.length === 0) return null
+
+  const getScoreColor = (score: number | null) => {
+    if (score === null) return 'text-[var(--color-text-muted)]'
+    if (score >= 0.8) return 'text-emerald-400'
+    if (score >= 0.6) return 'text-amber-400'
+    return 'text-[var(--color-text-muted)]'
+  }
+
+  const getScoreBg = (score: number | null) => {
+    if (score === null) return 'rgba(255,255,255,0.05)'
+    if (score >= 0.8) return 'rgba(52, 211, 153, 0.1)'
+    if (score >= 0.6) return 'rgba(251, 191, 36, 0.1)'
+    return 'rgba(255,255,255,0.05)'
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      className="mt-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <SearchIcon className="w-4 h-4 text-[var(--color-accent-primary)]" />
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          Search Results
+        </h3>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          ({total} matches for "{query}")
+        </span>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {results.map((result, index) => (
+          <motion.div
+            key={index}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: index * 0.06 }}
+            className="p-4 rounded-xl border border-[var(--color-glass-border)] bg-[var(--color-bg-secondary)]"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                  {result.product_name}
+                </span>
+                <span className="text-xs text-[var(--color-text-muted)]">
+                  by {result.reviewer_name}
+                </span>
+              </div>
+              {result.score !== null && (
+                <span
+                  className={`text-xs font-semibold px-2 py-0.5 rounded-full ${getScoreColor(result.score)}`}
+                  style={{ background: getScoreBg(result.score) }}
+                >
+                  {Math.round(result.score * 100)}%
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed line-clamp-3">
+              {result.content}
+            </p>
+            <div className="flex items-center gap-3 mt-2">
+              {result.aspect && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-[rgba(245,158,11,0.1)] text-[var(--color-accent-primary)]">
+                  {result.aspect}
+                </span>
+              )}
+              {result.source_url && (
+                <a
+                  href={result.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent-primary)] transition-colors flex items-center gap-1"
+                >
+                  <ExternalLinkIcon className="w-3 h-3" />
+                  Source
+                </a>
+              )}
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </motion.div>
+  )
+}
+
+// Sentiment chart component — horizontal stacked bars per aspect
+function SentimentChart({ aspects, productName }: { aspects: AspectSentiment[]; productName: string }) {
+  if (!aspects || aspects.length === 0) return null
+
+  const formatAspect = (aspect: string) =>
+    aspect.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+  const getSentimentLabel = (sentiment: number) => {
+    if (sentiment >= 0.5) return 'Very Positive'
+    if (sentiment >= 0.2) return 'Positive'
+    if (sentiment >= -0.2) return 'Mixed'
+    if (sentiment >= -0.5) return 'Negative'
+    return 'Very Negative'
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.3 }}
+      className="mt-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-4 h-4 rounded-sm bg-gradient-to-r from-emerald-500 to-emerald-400 flex-shrink-0" />
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          Sentiment Analysis
+        </h3>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          {productName}
+        </span>
+      </div>
+      <div className="p-4 rounded-xl border border-[var(--color-glass-border)] bg-[var(--color-bg-secondary)]">
+        <div className="space-y-3.5">
+          {aspects.map((aspect, index) => (
+            <motion.div
+              key={aspect.aspect}
+              initial={{ opacity: 0, x: -12 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.3, delay: index * 0.05 }}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-[var(--color-text-primary)] min-w-[100px]">
+                    {formatAspect(aspect.aspect)}
+                  </span>
+                  <span className="text-[10px] text-[var(--color-text-muted)]">
+                    {aspect.review_count} review{aspect.review_count !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-emerald-400">
+                    +{aspect.positive_pct}%
+                  </span>
+                  <span className="text-xs text-[var(--color-text-muted)]">/</span>
+                  <span className="text-xs font-medium text-red-400">
+                    -{aspect.negative_pct}%
+                  </span>
+                </div>
+              </div>
+              {/* Stacked bar */}
+              <div className="flex h-2.5 rounded-full overflow-hidden bg-[var(--color-bg-primary)]">
+                {aspect.positive_pct > 0 && (
+                  <motion.div
+                    className="h-full rounded-l-full"
+                    style={{ background: 'linear-gradient(90deg, #34d399, #6ee7b7)' }}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${aspect.positive_pct}%` }}
+                    transition={{ duration: 0.6, delay: index * 0.05, ease: 'easeOut' }}
+                  />
+                )}
+                {aspect.negative_pct > 0 && (
+                  <motion.div
+                    className="h-full ml-auto rounded-r-full"
+                    style={{ background: 'linear-gradient(90deg, #f87171, #fca5a5)' }}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${aspect.negative_pct}%` }}
+                    transition={{ duration: 0.6, delay: index * 0.05, ease: 'easeOut' }}
+                  />
+                )}
+              </div>
+              {/* Agreement indicator */}
+              <div className="flex items-center gap-1 mt-1">
+                <span className="text-[10px] text-[var(--color-text-muted)]">
+                  {getSentimentLabel(aspect.average_sentiment)} · Agreement: {Math.round(aspect.agreement_score * 100)}%
+                </span>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+// Comparison table component — grid with products as columns and aspects as rows
+function ComparisonTable({ products, aspectsCompared, aspectWinners, recommendation }: {
+  products: ComparisonProduct[]
+  aspectsCompared: string[]
+  aspectWinners: Record<string, { winner: string; score: number }>
+  recommendation: string
+}) {
+  if (!products || products.length === 0 || !aspectsCompared || aspectsCompared.length === 0) return null
+
+  const formatAspect = (aspect: string) =>
+    aspect.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+  const getScoreColor = (score: number) => {
+    if (score >= 0.5) return '#34d399'
+    if (score >= 0.2) return '#6ee7b7'
+    if (score >= -0.2) return '#fbbf24'
+    if (score >= -0.5) return '#f87171'
+    return '#ef4444'
+  }
+
+  const getScoreLabel = (score: number) => {
+    const pct = Math.round((score + 1) * 50) // -1..1 → 0..100
+    return `${pct}%`
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      className="mt-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <svg className="w-4 h-4 text-[var(--color-accent-primary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <line x1="3" y1="9" x2="21" y2="9" />
+          <line x1="3" y1="15" x2="21" y2="15" />
+          <line x1="9" y1="3" x2="9" y2="21" />
+        </svg>
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          Product Comparison
+        </h3>
+      </div>
+      <div className="rounded-xl border border-[var(--color-glass-border)] bg-[var(--color-bg-secondary)] overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-[var(--color-glass-border)] bg-[var(--color-bg-tertiary)]">
+              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Aspect
+              </th>
+              {products.map((product) => (
+                <th key={product.name} className="text-center px-4 py-3">
+                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">{product.name}</div>
+                  {product.brand && (
+                    <div className="text-[10px] text-[var(--color-text-muted)]">{product.brand}</div>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {aspectsCompared.map((aspect) => {
+              const winner = aspectWinners[aspect]
+              return (
+                <tr key={aspect} className="border-b border-[var(--color-glass-border)] last:border-b-0">
+                  <td className="px-4 py-3 text-sm font-medium text-[var(--color-text-secondary)]">
+                    {formatAspect(aspect)}
+                  </td>
+                  {products.map((product) => {
+                    const aspectData = product.aspects[aspect]
+                    const isWinner = winner?.winner === product.name
+                    return (
+                      <td
+                        key={product.name}
+                        className="text-center px-4 py-3"
+                        style={{
+                          background: isWinner ? 'rgba(245, 158, 11, 0.06)' : undefined,
+                        }}
+                      >
+                        {aspectData ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="flex items-center gap-1.5">
+                              <div
+                                className="w-8 h-2 rounded-full"
+                                style={{
+                                  background: getScoreColor(aspectData.sentiment_score),
+                                  opacity: 0.8,
+                                }}
+                              />
+                              <span className="text-xs font-semibold" style={{ color: getScoreColor(aspectData.sentiment_score) }}>
+                                {getScoreLabel(aspectData.sentiment_score)}
+                              </span>
+                            </div>
+                            {isWinner && (
+                              <span className="text-[10px] font-semibold text-[var(--color-accent-primary)]">
+                                BEST
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-[var(--color-text-muted)]">—</span>
+                        )}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+
+        {/* Recommendation */}
+        {recommendation && (
+          <div className="px-4 py-3 border-t border-[var(--color-glass-border)] bg-[var(--color-bg-tertiary)]">
+            <p className="text-sm text-[var(--color-text-secondary)]">
+              <span className="font-semibold text-[var(--color-accent-primary)]">Verdict:</span>{' '}
+              {recommendation}
+            </p>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
 // Attachments renderer
 function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
   return (
@@ -683,6 +1004,44 @@ function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
               key={`attachment-${index}`}
               listings={data.listings}
               productName={data.product_name}
+            />
+          )
+        }
+        if (attachment.type === 'semantic_search_results') {
+          const data = attachment.data as { query: string; results: SemanticSearchResult[]; total: number; search_type: string }
+          return (
+            <SemanticSearchResults
+              key={`attachment-${index}`}
+              results={data.results}
+              query={data.query}
+              total={data.total}
+            />
+          )
+        }
+        if (attachment.type === 'sentiment_analysis') {
+          const data = attachment.data as { product_name: string; aspects: AspectSentiment[] }
+          return (
+            <SentimentChart
+              key={`attachment-${index}`}
+              aspects={data.aspects}
+              productName={data.product_name}
+            />
+          )
+        }
+        if (attachment.type === 'comparison_table') {
+          const data = attachment.data as {
+            products: ComparisonProduct[]
+            aspects_compared: string[]
+            aspect_winners: Record<string, { winner: string; score: number }>
+            recommendation: string
+          }
+          return (
+            <ComparisonTable
+              key={`attachment-${index}`}
+              products={data.products}
+              aspectsCompared={data.aspects_compared}
+              aspectWinners={data.aspect_winners}
+              recommendation={data.recommendation}
             />
           )
         }
@@ -985,6 +1344,12 @@ export function ChatPage() {
   const handleNewChat = () => {
     clearChat()
     setSidebarOpen(false)
+    // Clear the ?q= search param so the initial query doesn't re-fire
+    if (searchParams.has('q')) {
+      navigate('/chat', { replace: true })
+    }
+    // Reset the ref so a fresh navigation with ?q= can work again
+    initialQuerySentRef.current = false
   }
 
   return (

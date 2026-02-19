@@ -4,7 +4,7 @@ const API_BASE_URL = '/api/v1'
 
 export async function sendChatMessage(request: ChatRequest): Promise<ApiChatResponse> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 300_000) // 5 min
+  const timeout = setTimeout(() => controller.abort(), 600_000) // 10 min — review ingestion can take 5-8 min for multi-product queries
 
   try {
     const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -40,7 +40,7 @@ export async function sendChatMessageStream(
   onProgress: (step: ProgressStep) => void,
 ): Promise<ApiChatResponse> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 300_000) // 5 min — review ingestion can take 2-3 min
+  const timeout = setTimeout(() => controller.abort(), 600_000) // 10 min — review ingestion can take 5-8 min for multi-product queries
 
   try {
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {

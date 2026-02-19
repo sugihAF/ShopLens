@@ -14,6 +14,11 @@ logger = get_logger(__name__)
 class BaseLLMProvider(ABC):
     """Abstract base for LLM providers."""
 
+    @property
+    def assistant_role(self) -> str:
+        """The role name for assistant/model messages. Override per provider."""
+        return "assistant"
+
     @abstractmethod
     async def generate(self, contents: List[Any], config: Any, tools: Any = None) -> Any:
         """Make an LLM call and return the raw response object."""
@@ -61,6 +66,10 @@ class BaseLLMProvider(ABC):
 
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini LLM provider."""
+
+    @property
+    def assistant_role(self) -> str:
+        return "model"
 
     def __init__(self):
         from google import genai

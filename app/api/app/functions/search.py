@@ -110,15 +110,17 @@ async def _text_search(db: AsyncSession, query: str, limit: int) -> Dict[str, An
     """
     Fallback text-based search using PostgreSQL full-text search.
     """
-    from sqlalchemy import select, or_, func
+    from sqlalchemy import select, or_
+    from sqlalchemy.orm import selectinload
     from app.models.review import Review
     from app.models.opinion import Opinion
     from app.models.product import Product
 
-    # Search in reviews
+    # Search in reviews (with reviewer eagerly loaded)
     review_results = await db.execute(
         select(Review, Product)
         .join(Product, Review.product_id == Product.id)
+        .options(selectinload(Review.reviewer))
         .where(
             or_(
                 Review.content.ilike(f"%{query}%"),
@@ -149,22 +151,25 @@ async def _text_search(db: AsyncSession, query: str, limit: int) -> Dict[str, An
 
     for review, product in reviews:
         results.append({
-            "type": "review",
+            "score": None,
             "product_id": product.id,
             "product_name": product.name,
+            "reviewer_name": review.reviewer.name if review.reviewer else "Unknown",
             "review_id": review.id,
-            "content": review.content[:500] if review.content else None,
-            "source_url": review.platform_url
+            "content": review.content[:500] if review.content else "",
+            "aspect": None,
+            "source_url": review.platform_url,
         })
 
     for opinion, product in opinions:
         results.append({
-            "type": "opinion",
+            "score": None,
             "product_id": product.id,
             "product_name": product.name,
+            "reviewer_name": "Unknown",
             "aspect": opinion.aspect,
-            "content": opinion.quote or opinion.summary,
-            "sentiment": float(opinion.sentiment) if opinion.sentiment is not None else None
+            "content": opinion.quote or opinion.summary or "",
+            "source_url": None,
         })
 
     return {

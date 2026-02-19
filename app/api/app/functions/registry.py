@@ -251,6 +251,24 @@ FUNCTION_DECLARATIONS = [
             },
             "required": ["reviewer_id"]
         }
+    },
+    {
+        "name": "semantic_search",
+        "description": "Search across all review content using natural language meaning. Uses vector similarity to find the most relevant review snippets. Use when user asks about specific topics across reviews, e.g. 'what do reviewers say about battery life'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language query to search for across reviews"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results to return (default: 10, max: 50)"
+                }
+            },
+            "required": ["query"]
+        }
     }
 ]
 

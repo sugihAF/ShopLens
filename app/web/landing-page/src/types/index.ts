@@ -36,7 +36,68 @@ export interface MarketplaceListingsAttachment {
   }
 }
 
-export type Attachment = ReviewerCardsAttachment | MarketplaceListingsAttachment | { type: string; data: unknown }
+// Semantic search result from vector search
+export interface SemanticSearchResult {
+  score: number | null
+  product_name: string
+  reviewer_name: string
+  content: string
+  aspect: string | null
+  source_url: string | null
+}
+
+export interface SemanticSearchAttachment {
+  type: 'semantic_search_results'
+  data: {
+    query: string
+    results: SemanticSearchResult[]
+    total: number
+    search_type: string
+  }
+}
+
+// Sentiment analysis from opinion extraction
+export interface AspectSentiment {
+  aspect: string
+  average_sentiment: number
+  positive_pct: number
+  negative_pct: number
+  review_count: number
+  agreement_score: number
+}
+
+export interface SentimentAnalysisAttachment {
+  type: 'sentiment_analysis'
+  data: {
+    product_name: string
+    aspects: AspectSentiment[]
+  }
+}
+
+// Product comparison table
+export interface ComparisonProduct {
+  name: string
+  brand: string
+  aspects: Record<string, { sentiment_score: number; agreement_score: number; review_count: number }>
+}
+
+export interface ComparisonTableAttachment {
+  type: 'comparison_table'
+  data: {
+    products: ComparisonProduct[]
+    aspects_compared: string[]
+    aspect_winners: Record<string, { winner: string; score: number }>
+    recommendation: string
+  }
+}
+
+export type Attachment =
+  | ReviewerCardsAttachment
+  | MarketplaceListingsAttachment
+  | SemanticSearchAttachment
+  | SentimentAnalysisAttachment
+  | ComparisonTableAttachment
+  | { type: string; data: unknown }
 
 export interface ProgressStep {
   step: string

@@ -450,7 +450,7 @@ class ChatService:
 
         history = []
         for msg in messages:
-            role = "user" if msg.role.value == "user" else "model"
+            role = "user" if msg.role.value == "user" else self.provider.assistant_role
             history.append(self.provider.build_content(role, msg.content))
 
         return history
@@ -468,7 +468,7 @@ class ChatService:
 
         history = []
         for msg in messages:
-            role = "user" if msg.role.value == "user" else "model"
+            role = "user" if msg.role.value == "user" else self.provider.assistant_role
             history.append(self.provider.build_content(role, msg.content))
 
         return history
@@ -554,6 +554,17 @@ class ChatService:
                         }
                     ))
 
+                # Extract sentiment analysis from aspect_sentiments
+                aspect_sentiments = result.get("aspect_sentiments", [])
+                if aspect_sentiments:
+                    attachments.append(Attachment(
+                        type="sentiment_analysis",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "aspects": aspect_sentiments,
+                        }
+                    ))
+
             # Note: check_product_cache card extraction removed to avoid duplicates
             # when get_reviews_summary is also called (which has better summary data)
 
@@ -628,6 +639,52 @@ class ChatService:
                         data={
                             "product_name": result.get("product", {}).get("name", ""),
                             "cards": reviewer_cards
+                        }
+                    ))
+
+            # Extract semantic search results
+            elif func_name == "semantic_search" and result.get("results"):
+                search_results = result.get("results", [])
+                if search_results:
+                    attachments.append(Attachment(
+                        type="semantic_search_results",
+                        data={
+                            "query": result.get("query", ""),
+                            "results": [
+                                {
+                                    "score": r.get("score"),
+                                    "product_name": r.get("product_name", ""),
+                                    "reviewer_name": r.get("reviewer_name", ""),
+                                    "content": r.get("content", ""),
+                                    "aspect": r.get("aspect"),
+                                    "source_url": r.get("source_url"),
+                                }
+                                for r in search_results[:10]
+                            ],
+                            "total": result.get("total", 0),
+                            "search_type": result.get("search_type", "vector"),
+                        }
+                    ))
+
+            # Extract comparison table from compare_products
+            elif func_name == "compare_products" and result.get("products"):
+                products = result.get("products", [])
+                aspects_compared = result.get("aspects_compared", [])
+                if products and aspects_compared:
+                    attachments.append(Attachment(
+                        type="comparison_table",
+                        data={
+                            "products": [
+                                {
+                                    "name": p.get("name", ""),
+                                    "brand": p.get("brand", ""),
+                                    "aspects": p.get("aspects", {}),
+                                }
+                                for p in products
+                            ],
+                            "aspects_compared": aspects_compared,
+                            "aspect_winners": result.get("aspect_winners", {}),
+                            "recommendation": result.get("recommendation", ""),
                         }
                     ))
 
