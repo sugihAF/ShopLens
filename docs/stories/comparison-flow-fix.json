@@ -1,0 +1,38 @@
+{
+  "feature": "Comparison Flow Fix",
+  "created": "2026-02-21",
+  "stories": [
+    {
+      "id": 1,
+      "title": "Add comparison workflow to system prompt",
+      "description": "Update SYSTEM_PROMPT with provider-agnostic comparison flow: when user asks to compare products, the LLM must call get_reviews_summary for EACH product (to ensure opinions/sentiment are extracted), then call compare_products to generate the side-by-side table. Also add semantic_search to the function reference.",
+      "acceptance": [
+        "SYSTEM_PROMPT contains a 'Comparison Flow' section",
+        "The comparison section instructs calling get_reviews_summary for EACH product being compared",
+        "The comparison section instructs calling compare_products after summaries are ready",
+        "semantic_search is listed in the Function Reference section",
+        "All 4 tests in tests/test_story1_comparison_prompt.py pass"
+      ],
+      "dependencies": [],
+      "status": "passed",
+      "files_modified": ["app/api/app/services/chat_service.py"],
+      "ralph_iterations": 1
+    },
+    {
+      "id": 2,
+      "title": "Ensure opinion extraction on cached summaries",
+      "description": "When get_reviews_summary returns a Redis-cached summary, check if consensus data exists for the product. If not, run the opinion extraction pipeline (_extract_opinions_and_build_consensus) even on a cache hit. This ensures products ingested before the opinion pipeline was added still get sentiment data for comparisons.",
+      "acceptance": [
+        "get_reviews_summary checks for existing consensus after cache hit",
+        "If consensus is missing, opinion extraction runs even with cached summary",
+        "If consensus already exists, no redundant extraction occurs",
+        "aspect_sentiments is included in the return value after extraction",
+        "All 5 tests in tests/test_story2_opinion_on_cache.py pass"
+      ],
+      "dependencies": [1],
+      "status": "pending",
+      "files_modified": [],
+      "ralph_iterations": 0
+    }
+  ]
+}
