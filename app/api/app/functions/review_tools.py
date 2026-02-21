@@ -1340,6 +1340,69 @@ async def get_reviews_summary(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
     cached_summary = await cache.get(summary_cache_key)
     if cached_summary is not None:
         logger.debug(f"Summary cache hit for: {product_name or product_id}")
+
+        # Check if consensus data exists — if not, run opinion extraction
+        # This handles products ingested before the opinion pipeline was added
+        product_info = cached_summary.get("product", {})
+        cached_product_id = product_info.get("id")
+        if cached_product_id:
+            from app.crud.consensus import consensus_crud
+            existing_consensus = await consensus_crud.get_by_product(db, product_id=cached_product_id)
+
+            if not existing_consensus:
+                # No consensus yet — need to run opinion extraction
+                logger.debug(f"Cache hit but no consensus for product {cached_product_id}, running extraction")
+                try:
+                    # Load product with reviews for extraction
+                    prod_result = await db.execute(
+                        select(Product)
+                        .options(selectinload(Product.reviews).selectinload(Review.reviewer))
+                        .where(Product.id == cached_product_id)
+                    )
+                    product_for_extraction = prod_result.scalar_one_or_none()
+
+                    if product_for_extraction and product_for_extraction.reviews:
+                        # Build review text
+                        reviews_context = []
+                        for review in product_for_extraction.reviews:
+                            reviewer_name = review.reviewer.name if review.reviewer else "Unknown"
+                            platform = review.reviewer.platform.value if review.reviewer else "unknown"
+                            reviews_context.append(f"""
+### {reviewer_name} ({platform})
+URL: {review.platform_url}
+
+{review.content}
+""")
+                        all_reviews_text = "\n---\n".join(reviews_context)
+                        aspect_sentiments = await _extract_opinions_and_build_consensus(
+                            db, product_for_extraction, all_reviews_text
+                        )
+                        cached_summary["aspect_sentiments"] = aspect_sentiments
+                except Exception as e:
+                    logger.warning(f"Opinion extraction on cache hit failed (non-fatal): {e}")
+                    cached_summary.setdefault("aspect_sentiments", [])
+            else:
+                # Consensus exists — build aspect_sentiments from it (no LLM call)
+                cached_summary["aspect_sentiments"] = [
+                    {
+                        "aspect": c.aspect,
+                        "average_sentiment": float(c.average_sentiment),
+                        "positive_pct": round(
+                            (c.details or {}).get("positive_count", 0)
+                            / max(c.review_count, 1) * 100
+                        ),
+                        "negative_pct": round(
+                            (c.details or {}).get("negative_count", 0)
+                            / max(c.review_count, 1) * 100
+                        ),
+                        "review_count": c.review_count,
+                        "agreement_score": float(c.agreement_score),
+                    }
+                    for c in existing_consensus
+                ]
+        else:
+            cached_summary.setdefault("aspect_sentiments", [])
+
         return cached_summary
 
     # Find product
