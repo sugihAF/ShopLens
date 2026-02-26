@@ -763,7 +763,7 @@ function SemanticSearchResults({ results, query, total }: { results: SemanticSea
   )
 }
 
-// Sentiment chart component — horizontal stacked bars per aspect
+// Sentiment chart component — diverging butterfly chart per aspect
 function SentimentChart({ aspects, productName }: { aspects: AspectSentiment[]; productName: string }) {
   if (!aspects || aspects.length === 0) return null
 
@@ -778,86 +778,270 @@ function SentimentChart({ aspects, productName }: { aspects: AspectSentiment[]; 
     return 'Very Negative'
   }
 
+  const getAgreementColor = (score: number) => {
+    if (score >= 0.8) return '#34d399'
+    if (score >= 0.6) return '#fbbf24'
+    return '#fb7185'
+  }
+
+  // Sort by positive_pct descending for visual impact
+  const sorted = [...aspects].sort((a, b) => b.positive_pct - a.positive_pct)
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, delay: 0.3 }}
+      transition={{ duration: 0.5, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
       className="mt-4"
     >
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-4 h-4 rounded-sm bg-gradient-to-r from-emerald-500 to-emerald-400 flex-shrink-0" />
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-          Sentiment Analysis
-        </h3>
-        <span className="text-xs text-[var(--color-text-muted)]">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center gap-2">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="1" y="3" width="5" height="10" rx="1.5" fill="#34d399" opacity="0.7" />
+            <rect x="10" y="5" width="5" height="8" rx="1.5" fill="#fb7185" opacity="0.7" />
+            <line x1="8" y1="1" x2="8" y2="15" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+          </svg>
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: '-0.01em' }}>
+            Sentiment Analysis
+          </h3>
+        </div>
+        <span
+          className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+          style={{
+            background: 'rgba(245, 158, 11, 0.1)',
+            color: 'var(--color-accent-primary)',
+            border: '1px solid rgba(245, 158, 11, 0.15)',
+          }}
+        >
           {productName}
         </span>
       </div>
-      <div className="p-4 rounded-xl border border-[var(--color-glass-border)] bg-[var(--color-bg-secondary)]">
-        <div className="space-y-3.5">
-          {aspects.map((aspect, index) => (
-            <motion.div
-              key={aspect.aspect}
-              initial={{ opacity: 0, x: -12 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.3, delay: index * 0.05 }}
-            >
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-[var(--color-text-primary)] min-w-[100px]">
+
+      {/* Chart Container */}
+      <div
+        className="rounded-xl overflow-hidden"
+        style={{
+          background: 'var(--color-bg-secondary)',
+          border: '1px solid var(--color-glass-border)',
+        }}
+      >
+        {/* Column headers */}
+        <div
+          className="flex items-center px-4 py-2.5"
+          style={{
+            borderBottom: '1px solid var(--color-glass-border)',
+            background: 'var(--color-bg-tertiary)',
+          }}
+        >
+          <div className="flex items-center justify-end" style={{ width: '35%', paddingRight: '12px' }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#fb7185', opacity: 0.7 }}>
+              Negative
+            </span>
+          </div>
+          <div className="flex items-center justify-center" style={{ width: '30%' }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
+              Aspect
+            </span>
+          </div>
+          <div className="flex items-center" style={{ width: '35%', paddingLeft: '12px' }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#34d399', opacity: 0.7 }}>
+              Positive
+            </span>
+          </div>
+        </div>
+
+        {/* Rows */}
+        <div>
+          {sorted.map((aspect, index) => {
+            const agreementPct = Math.round(aspect.agreement_score * 100)
+            const sentimentLabel = getSentimentLabel(aspect.average_sentiment)
+            const isPositive = aspect.positive_pct >= aspect.negative_pct
+
+            return (
+              <motion.div
+                key={aspect.aspect}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.4, delay: 0.15 + index * 0.06 }}
+                className="flex items-center px-4"
+                style={{
+                  minHeight: '52px',
+                  borderBottom: index < sorted.length - 1 ? '1px solid rgba(255,255,255,0.03)' : undefined,
+                  background: index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)',
+                }}
+              >
+                {/* Left side — negative bar (grows right-to-left) */}
+                <div className="flex items-center justify-end" style={{ width: '35%', paddingRight: '12px', gap: '8px' }}>
+                  <span
+                    className="text-[11px] font-medium tabular-nums flex-shrink-0"
+                    style={{
+                      color: aspect.negative_pct > 0 ? '#fb7185' : 'var(--color-text-muted)',
+                      opacity: aspect.negative_pct > 0 ? 1 : 0.4,
+                      minWidth: '32px',
+                      textAlign: 'right',
+                    }}
+                  >
+                    {aspect.negative_pct > 0 ? `${aspect.negative_pct}%` : '—'}
+                  </span>
+                  <div
+                    className="relative overflow-hidden rounded-l-sm"
+                    style={{
+                      width: '100%',
+                      maxWidth: '140px',
+                      height: '18px',
+                      background: 'rgba(255,255,255,0.03)',
+                      borderRadius: '3px 0 0 3px',
+                    }}
+                  >
+                    <motion.div
+                      className="absolute top-0 right-0 h-full"
+                      style={{
+                        background: 'linear-gradient(270deg, rgba(251,113,133,0.85), rgba(251,113,133,0.4))',
+                        borderRadius: '3px 0 0 3px',
+                      }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${aspect.negative_pct}%` }}
+                      transition={{ duration: 0.7, delay: 0.2 + index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                    />
+                  </div>
+                </div>
+
+                {/* Center — aspect label */}
+                <div
+                  className="flex flex-col items-center justify-center flex-shrink-0"
+                  style={{
+                    width: '30%',
+                    borderLeft: '1px solid rgba(255,255,255,0.06)',
+                    borderRight: '1px solid rgba(255,255,255,0.06)',
+                    padding: '6px 8px',
+                  }}
+                >
+                  <span
+                    className="text-[12px] font-semibold text-center leading-tight"
+                    style={{
+                      color: 'var(--color-text-primary)',
+                      letterSpacing: '-0.01em',
+                    }}
+                  >
                     {formatAspect(aspect.aspect)}
                   </span>
-                  <span className="text-[10px] text-[var(--color-text-muted)]">
-                    {aspect.review_count} review{aspect.review_count !== 1 ? 's' : ''}
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span
+                      className="text-[9px] font-medium"
+                      style={{
+                        color: isPositive ? '#34d399' : '#fb7185',
+                        opacity: 0.8,
+                      }}
+                    >
+                      {sentimentLabel}
+                    </span>
+                    <span className="text-[9px]" style={{ color: 'var(--color-text-muted)' }}>·</span>
+                    <div className="flex items-center gap-1" title={`${agreementPct}% reviewer agreement`}>
+                      {/* Agreement dots — 5 dots to visualize agreement level */}
+                      <div className="flex gap-px">
+                        {[...Array(5)].map((_, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              width: '4px',
+                              height: '4px',
+                              borderRadius: '1px',
+                              background: i < Math.round(aspect.agreement_score * 5)
+                                ? getAgreementColor(aspect.agreement_score)
+                                : 'rgba(255,255,255,0.08)',
+                              transition: 'background 0.3s',
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-[9px] tabular-nums" style={{ color: 'var(--color-text-muted)' }}>
+                        {aspect.review_count}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right side — positive bar (grows left-to-right) */}
+                <div className="flex items-center" style={{ width: '35%', paddingLeft: '12px', gap: '8px' }}>
+                  <div
+                    className="relative overflow-hidden"
+                    style={{
+                      width: '100%',
+                      maxWidth: '140px',
+                      height: '18px',
+                      background: 'rgba(255,255,255,0.03)',
+                      borderRadius: '0 3px 3px 0',
+                    }}
+                  >
+                    <motion.div
+                      className="absolute top-0 left-0 h-full"
+                      style={{
+                        background: 'linear-gradient(90deg, rgba(52,211,153,0.85), rgba(52,211,153,0.4))',
+                        borderRadius: '0 3px 3px 0',
+                      }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${aspect.positive_pct}%` }}
+                      transition={{ duration: 0.7, delay: 0.2 + index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                    />
+                  </div>
+                  <span
+                    className="text-[11px] font-medium tabular-nums flex-shrink-0"
+                    style={{
+                      color: aspect.positive_pct > 0 ? '#34d399' : 'var(--color-text-muted)',
+                      opacity: aspect.positive_pct > 0 ? 1 : 0.4,
+                      minWidth: '32px',
+                    }}
+                  >
+                    {aspect.positive_pct > 0 ? `${aspect.positive_pct}%` : '—'}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-emerald-400">
-                    +{aspect.positive_pct}%
-                  </span>
-                  <span className="text-xs text-[var(--color-text-muted)]">/</span>
-                  <span className="text-xs font-medium text-red-400">
-                    -{aspect.negative_pct}%
-                  </span>
-                </div>
-              </div>
-              {/* Stacked bar */}
-              <div className="flex h-2.5 rounded-full overflow-hidden bg-[var(--color-bg-primary)]">
-                {aspect.positive_pct > 0 && (
-                  <motion.div
-                    className="h-full rounded-l-full"
-                    style={{ background: 'linear-gradient(90deg, #34d399, #6ee7b7)' }}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${aspect.positive_pct}%` }}
-                    transition={{ duration: 0.6, delay: index * 0.05, ease: 'easeOut' }}
-                  />
-                )}
-                {aspect.negative_pct > 0 && (
-                  <motion.div
-                    className="h-full ml-auto rounded-r-full"
-                    style={{ background: 'linear-gradient(90deg, #f87171, #fca5a5)' }}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${aspect.negative_pct}%` }}
-                    transition={{ duration: 0.6, delay: index * 0.05, ease: 'easeOut' }}
-                  />
-                )}
-              </div>
-              {/* Agreement indicator */}
-              <div className="flex items-center gap-1 mt-1">
-                <span className="text-[10px] text-[var(--color-text-muted)]">
-                  {getSentimentLabel(aspect.average_sentiment)} · Agreement: {Math.round(aspect.agreement_score * 100)}%
-                </span>
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            )
+          })}
+        </div>
+
+        {/* Footer legend */}
+        <div
+          className="flex items-center justify-between px-4 py-2"
+          style={{
+            borderTop: '1px solid var(--color-glass-border)',
+            background: 'var(--color-bg-tertiary)',
+          }}
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#34d399', opacity: 0.7 }} />
+              <span className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Positive</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#fb7185', opacity: 0.7 }} />
+              <span className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Negative</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="flex gap-px">
+              {[...Array(5)].map((_, i) => (
+                <div
+                  key={i}
+                  style={{
+                    width: '4px',
+                    height: '4px',
+                    borderRadius: '1px',
+                    background: i < 4 ? '#fbbf24' : 'rgba(255,255,255,0.08)',
+                  }}
+                />
+              ))}
+            </div>
+            <span className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Agreement</span>
+          </div>
         </div>
       </div>
     </motion.div>
   )
 }
 
-// Comparison table component — grid with products as columns and aspects as rows
+// Comparison table component — duel-style racing bars with side-by-side scores
 function ComparisonTable({ products, aspectsCompared, aspectWinners, recommendation }: {
   products: ComparisonProduct[]
   aspectsCompared: string[]
@@ -873,108 +1057,245 @@ function ComparisonTable({ products, aspectsCompared, aspectWinners, recommendat
     if (score >= 0.5) return '#34d399'
     if (score >= 0.2) return '#6ee7b7'
     if (score >= -0.2) return '#fbbf24'
-    if (score >= -0.5) return '#f87171'
+    if (score >= -0.5) return '#fb7185'
     return '#ef4444'
   }
 
-  const getScoreLabel = (score: number) => {
-    const pct = Math.round((score + 1) * 50) // -1..1 → 0..100
-    return `${pct}%`
-  }
+  const getScorePct = (score: number) => Math.round((score + 1) * 50)
+
+  // Assign each product a distinct color for its bars
+  const productColors = ['#38bdf8', '#f59e0b'] // sky blue vs amber
+  const productColorsFaded = ['rgba(56,189,248,0.15)', 'rgba(245,158,11,0.15)']
+
+  // Count wins per product
+  const winCounts: Record<string, number> = {}
+  products.forEach(p => { winCounts[p.name] = 0 })
+  Object.values(aspectWinners).forEach(w => {
+    if (w?.winner && winCounts[w.winner] !== undefined) winCounts[w.winner]++
+  })
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, delay: 0.2 }}
+      transition={{ duration: 0.5, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
       className="mt-4"
     >
+      {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <svg className="w-4 h-4 text-[var(--color-accent-primary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <line x1="3" y1="9" x2="21" y2="9" />
-          <line x1="3" y1="15" x2="21" y2="15" />
-          <line x1="9" y1="3" x2="9" y2="21" />
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 4h5v8H2V4z" fill="#38bdf8" opacity="0.6" rx="1" />
+          <path d="M9 4h5v8H9V4z" fill="#f59e0b" opacity="0.6" rx="1" />
+          <path d="M7 2v12" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
         </svg>
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: '-0.01em' }}>
           Product Comparison
         </h3>
       </div>
-      <div className="rounded-xl border border-[var(--color-glass-border)] bg-[var(--color-bg-secondary)] overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-[var(--color-glass-border)] bg-[var(--color-bg-tertiary)]">
-              <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                Aspect
-              </th>
-              {products.map((product) => (
-                <th key={product.name} className="text-center px-4 py-3">
-                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">{product.name}</div>
-                  {product.brand && (
-                    <div className="text-[10px] text-[var(--color-text-muted)]">{product.brand}</div>
-                  )}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {aspectsCompared.map((aspect) => {
-              const winner = aspectWinners[aspect]
-              return (
-                <tr key={aspect} className="border-b border-[var(--color-glass-border)] last:border-b-0">
-                  <td className="px-4 py-3 text-sm font-medium text-[var(--color-text-secondary)]">
+
+      <div
+        className="rounded-xl overflow-hidden"
+        style={{
+          background: 'var(--color-bg-secondary)',
+          border: '1px solid var(--color-glass-border)',
+        }}
+      >
+        {/* Product header row */}
+        <div
+          className="flex items-stretch"
+          style={{
+            borderBottom: '1px solid var(--color-glass-border)',
+            background: 'var(--color-bg-tertiary)',
+          }}
+        >
+          {products.map((product, pIdx) => (
+            <div
+              key={product.name}
+              className="flex-1 flex items-center justify-center gap-3 py-3 px-4"
+              style={{
+                borderRight: pIdx < products.length - 1 ? '1px solid var(--color-glass-border)' : undefined,
+              }}
+            >
+              <div
+                className="flex-shrink-0"
+                style={{
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '3px',
+                  background: productColors[pIdx] || '#888',
+                  boxShadow: `0 0 8px ${productColors[pIdx] || '#888'}40`,
+                }}
+              />
+              <div className="text-center">
+                <div className="text-[13px] font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: '-0.01em' }}>
+                  {product.name}
+                </div>
+                {product.brand && (
+                  <div className="text-[10px] text-[var(--color-text-muted)]">{product.brand}</div>
+                )}
+              </div>
+              <span
+                className="text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded"
+                style={{
+                  background: productColorsFaded[pIdx],
+                  color: productColors[pIdx],
+                }}
+              >
+                {winCounts[product.name] || 0}W
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Aspect rows — racing bar style */}
+        <div>
+          {aspectsCompared.map((aspect, index) => {
+            const winner = aspectWinners[aspect]
+            const scores = products.map(p => p.aspects[aspect])
+            const hasAnyData = scores.some(s => s !== undefined)
+
+            if (!hasAnyData) return null
+
+            return (
+              <motion.div
+                key={aspect}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.4, delay: 0.15 + index * 0.06 }}
+                className="px-4"
+                style={{
+                  paddingTop: '10px',
+                  paddingBottom: '10px',
+                  borderBottom: index < aspectsCompared.length - 1 ? '1px solid rgba(255,255,255,0.03)' : undefined,
+                  background: index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)',
+                }}
+              >
+                {/* Aspect label */}
+                <div className="flex items-center justify-between mb-2">
+                  <span
+                    className="text-[11px] font-semibold uppercase"
+                    style={{ color: 'var(--color-text-tertiary)', letterSpacing: '0.04em' }}
+                  >
                     {formatAspect(aspect)}
-                  </td>
-                  {products.map((product) => {
+                  </span>
+                  {winner && (
+                    <span
+                      className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
+                      style={{
+                        background: 'rgba(245,158,11,0.1)',
+                        color: 'var(--color-accent-primary)',
+                        border: '1px solid rgba(245,158,11,0.15)',
+                      }}
+                    >
+                      {winner.winner.split(' ').slice(-1)[0]}
+                    </span>
+                  )}
+                </div>
+
+                {/* Racing bars — one per product */}
+                <div className="flex flex-col gap-1.5">
+                  {products.map((product, pIdx) => {
                     const aspectData = product.aspects[aspect]
+                    const pct = aspectData ? getScorePct(aspectData.sentiment_score) : 0
                     const isWinner = winner?.winner === product.name
+                    const color = productColors[pIdx] || '#888'
+
                     return (
-                      <td
-                        key={product.name}
-                        className="text-center px-4 py-3"
-                        style={{
-                          background: isWinner ? 'rgba(245, 158, 11, 0.06)' : undefined,
-                        }}
-                      >
-                        {aspectData ? (
-                          <div className="flex flex-col items-center gap-1">
-                            <div className="flex items-center gap-1.5">
-                              <div
-                                className="w-8 h-2 rounded-full"
-                                style={{
-                                  background: getScoreColor(aspectData.sentiment_score),
-                                  opacity: 0.8,
-                                }}
-                              />
-                              <span className="text-xs font-semibold" style={{ color: getScoreColor(aspectData.sentiment_score) }}>
-                                {getScoreLabel(aspectData.sentiment_score)}
-                              </span>
+                      <div key={product.name} className="flex items-center gap-2">
+                        {/* Product initial */}
+                        <span
+                          className="text-[10px] font-semibold flex-shrink-0 tabular-nums"
+                          style={{
+                            color: aspectData ? color : 'var(--color-text-muted)',
+                            minWidth: '18px',
+                            textAlign: 'right',
+                            opacity: aspectData ? 1 : 0.4,
+                          }}
+                        >
+                          {product.name.split(' ')[0].charAt(0)}{product.name.split(' ').length > 1 ? product.name.split(' ').slice(-1)[0].charAt(0) : ''}
+                        </span>
+
+                        {/* Bar track */}
+                        <div
+                          className="flex-1 relative overflow-hidden"
+                          style={{
+                            height: '14px',
+                            background: 'rgba(255,255,255,0.03)',
+                            borderRadius: '3px',
+                          }}
+                        >
+                          {aspectData ? (
+                            <motion.div
+                              className="absolute top-0 left-0 h-full"
+                              style={{
+                                background: isWinner
+                                  ? `linear-gradient(90deg, ${color}dd, ${color}88)`
+                                  : `linear-gradient(90deg, ${color}88, ${color}44)`,
+                                borderRadius: '3px',
+                                boxShadow: isWinner ? `0 0 12px ${color}30` : undefined,
+                              }}
+                              initial={{ width: 0 }}
+                              animate={{ width: `${pct}%` }}
+                              transition={{ duration: 0.8, delay: 0.2 + index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                            />
+                          ) : (
+                            <div
+                              className="absolute inset-0 flex items-center justify-center"
+                              style={{ color: 'var(--color-text-muted)', fontSize: '9px', letterSpacing: '0.05em' }}
+                            >
+                              No reviews
                             </div>
-                            {isWinner && (
-                              <span className="text-[10px] font-semibold text-[var(--color-accent-primary)]">
-                                BEST
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-xs text-[var(--color-text-muted)]">—</span>
-                        )}
-                      </td>
+                          )}
+                        </div>
+
+                        {/* Score label */}
+                        <span
+                          className="text-[11px] font-semibold tabular-nums flex-shrink-0"
+                          style={{
+                            color: aspectData ? getScoreColor(aspectData.sentiment_score) : 'var(--color-text-muted)',
+                            minWidth: '30px',
+                            textAlign: 'right',
+                            opacity: aspectData ? 1 : 0.3,
+                          }}
+                        >
+                          {aspectData ? `${pct}%` : '—'}
+                        </span>
+                      </div>
                     )
                   })}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+                </div>
+              </motion.div>
+            )
+          })}
+        </div>
 
-        {/* Recommendation */}
+        {/* Verdict banner */}
         {recommendation && (
-          <div className="px-4 py-3 border-t border-[var(--color-glass-border)] bg-[var(--color-bg-tertiary)]">
-            <p className="text-sm text-[var(--color-text-secondary)]">
-              <span className="font-semibold text-[var(--color-accent-primary)]">Verdict:</span>{' '}
-              {recommendation}
-            </p>
+          <div
+            className="px-4 py-3 flex items-start gap-3"
+            style={{
+              borderTop: '1px solid var(--color-glass-border)',
+              background: 'linear-gradient(135deg, rgba(245,158,11,0.06) 0%, rgba(245,158,11,0.02) 100%)',
+            }}
+          >
+            <svg
+              width="16" height="16" viewBox="0 0 16 16" fill="none"
+              className="flex-shrink-0 mt-0.5"
+              style={{ color: 'var(--color-accent-primary)' }}
+            >
+              <path d="M8 1l2.1 4.3 4.7.7-3.4 3.3.8 4.7L8 11.8 3.8 14l.8-4.7L1.2 6l4.7-.7L8 1z" fill="currentColor" opacity="0.8" />
+            </svg>
+            <div>
+              <span
+                className="text-[10px] font-semibold uppercase"
+                style={{ color: 'var(--color-accent-primary)', letterSpacing: '0.06em' }}
+              >
+                Verdict
+              </span>
+              <p className="text-[12px] leading-relaxed mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
+                {recommendation}
+              </p>
+            </div>
           </div>
         )}
       </div>

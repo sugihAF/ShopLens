@@ -92,7 +92,7 @@ When the user asks to compare products (e.g., "compare X vs Y", "which is better
 1. Identify ALL products being compared
 2. For each product, follow Steps 1-2 (check cache, ingest if needed)
 3. Call `get_reviews_summary(product_name)` for EACH product — this is critical because it generates sentiment analysis data needed for the comparison table. Do NOT skip this for any product, even if cached.
-4. After summaries are ready for all products, call `compare_products(product_ids=[...])` with the product IDs from the summary results
+4. After summaries are ready for all products, call `compare_products(product_ids=[...])` with the product IDs from the `product.id` field in each `get_reviews_summary` result
 5. Present your response with:
    - Brief individual summaries for each product
    - The comparison results showing which product wins in each aspect

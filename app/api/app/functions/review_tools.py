@@ -1224,10 +1224,6 @@ Return ONLY valid JSON:
                     return review
             return None
 
-        # Delete existing opinions for re-extraction
-        review_ids = [r.id for r in product.reviews]
-        await opinion_crud.delete_for_reviews(db, review_ids)
-
         # Build opinion records
         opinion_records = []
         for op in raw_opinions:
@@ -1252,8 +1248,11 @@ Return ONLY valid JSON:
             logger.warning("Opinion extraction: no valid opinions after mapping")
             return []
 
-        # Bulk insert
-        created = await opinion_crud.bulk_create(db, opinion_records)
+        # Delete + insert in a savepoint so partial failure doesn't leave orphans
+        review_ids = [r.id for r in product.reviews]
+        async with db.begin_nested():
+            await opinion_crud.delete_for_reviews(db, review_ids)
+            created = await opinion_crud.bulk_create(db, opinion_records)
         log_detail(logger, f"Opinions: {len(created)} extracted for {product.name}")
 
         # Build consensus per aspect
@@ -1268,7 +1267,9 @@ Return ONLY valid JSON:
             avg_sentiment = sum(sentiments) / len(sentiments)
 
             if len(sentiments) > 1:
-                agreement = 1.0 - statistics.stdev(sentiments)
+                # Use pstdev (population) since we have all reviews, not a sample.
+                # Normalize by max possible stdev (1.0 for [-1,1] range) to get [0,1].
+                agreement = 1.0 - statistics.pstdev(sentiments)
                 agreement = max(0.0, min(1.0, agreement))
             else:
                 agreement = 1.0
@@ -1377,6 +1378,7 @@ URL: {review.platform_url}
                         aspect_sentiments = await _extract_opinions_and_build_consensus(
                             db, product_for_extraction, all_reviews_text
                         )
+                        await db.commit()
                         cached_summary["aspect_sentiments"] = aspect_sentiments
                 except Exception as e:
                     logger.warning(f"Opinion extraction on cache hit failed (non-fatal): {e}")
@@ -1401,8 +1403,11 @@ URL: {review.platform_url}
                     for c in existing_consensus
                 ]
         else:
+            logger.warning(f"Cached summary missing product.id for '{product_name or product_id}', cannot check consensus")
             cached_summary.setdefault("aspect_sentiments", [])
 
+        # Write enriched summary (with aspect_sentiments) back to cache
+        await cache.set(summary_cache_key, cached_summary, ttl=settings.CACHE_SUMMARY_TTL)
         return cached_summary
 
     # Find product
