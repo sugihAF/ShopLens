@@ -4,7 +4,10 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChat } from '@/hooks'
 import { formatMarkdown } from '@/lib/utils'
 import { LogoIcon, SendIcon } from '@/components/ui'
-import type { ChatMessage, ReviewerCard, MarketplaceListing, Attachment, ProgressStep } from '@/types'
+import type {
+  ChatMessage, ReviewerCard, MarketplaceListing, Attachment, ProgressStep,
+  SemanticSearchResult, AspectSentiment, ComparisonProduct
+} from '@/types'
 
 // Icons
 function ArrowLeftIcon({ className }: { className?: string }) {
@@ -661,6 +664,645 @@ function MarketplaceCards({ listings, productName }: { listings: MarketplaceList
   )
 }
 
+// Search icon for semantic search results
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
+// Semantic search results component
+function SemanticSearchResults({ results, query, total }: { results: SemanticSearchResult[]; query: string; total: number }) {
+  if (!results || results.length === 0) return null
+
+  const getScoreColor = (score: number | null) => {
+    if (score === null) return 'text-[var(--color-text-muted)]'
+    if (score >= 0.8) return 'text-emerald-400'
+    if (score >= 0.6) return 'text-amber-400'
+    return 'text-[var(--color-text-muted)]'
+  }
+
+  const getScoreBg = (score: number | null) => {
+    if (score === null) return 'rgba(255,255,255,0.05)'
+    if (score >= 0.8) return 'rgba(52, 211, 153, 0.1)'
+    if (score >= 0.6) return 'rgba(251, 191, 36, 0.1)'
+    return 'rgba(255,255,255,0.05)'
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      className="mt-4"
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <SearchIcon className="w-4 h-4 text-[var(--color-accent-primary)]" />
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          Search Results
+        </h3>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          ({total} matches for "{query}")
+        </span>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {results.map((result, index) => (
+          <motion.div
+            key={index}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: index * 0.06 }}
+            className="p-4 rounded-xl border border-[var(--color-glass-border)] bg-[var(--color-bg-secondary)]"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                  {result.product_name}
+                </span>
+                <span className="text-xs text-[var(--color-text-muted)]">
+                  by {result.reviewer_name}
+                </span>
+              </div>
+              {result.score !== null && (
+                <span
+                  className={`text-xs font-semibold px-2 py-0.5 rounded-full ${getScoreColor(result.score)}`}
+                  style={{ background: getScoreBg(result.score) }}
+                >
+                  {Math.round(result.score * 100)}%
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed line-clamp-3">
+              {result.content}
+            </p>
+            <div className="flex items-center gap-3 mt-2">
+              {result.aspect && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-[rgba(245,158,11,0.1)] text-[var(--color-accent-primary)]">
+                  {result.aspect}
+                </span>
+              )}
+              {result.source_url && (
+                <a
+                  href={result.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent-primary)] transition-colors flex items-center gap-1"
+                >
+                  <ExternalLinkIcon className="w-3 h-3" />
+                  Source
+                </a>
+              )}
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </motion.div>
+  )
+}
+
+// Sentiment chart component — diverging butterfly chart per aspect
+function SentimentChart({ aspects, productName }: { aspects: AspectSentiment[]; productName: string }) {
+  if (!aspects || aspects.length === 0) return null
+
+  const formatAspect = (aspect: string) =>
+    aspect.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+  const getSentimentLabel = (sentiment: number) => {
+    if (sentiment >= 0.5) return 'Very Positive'
+    if (sentiment >= 0.2) return 'Positive'
+    if (sentiment >= -0.2) return 'Mixed'
+    if (sentiment >= -0.5) return 'Negative'
+    return 'Very Negative'
+  }
+
+  const getAgreementColor = (score: number) => {
+    if (score >= 0.8) return '#34d399'
+    if (score >= 0.6) return '#fbbf24'
+    return '#fb7185'
+  }
+
+  // Sort by positive_pct descending for visual impact
+  const sorted = [...aspects].sort((a, b) => b.positive_pct - a.positive_pct)
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      className="mt-4"
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center gap-2">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="1" y="3" width="5" height="10" rx="1.5" fill="#34d399" opacity="0.7" />
+            <rect x="10" y="5" width="5" height="8" rx="1.5" fill="#fb7185" opacity="0.7" />
+            <line x1="8" y1="1" x2="8" y2="15" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+          </svg>
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: '-0.01em' }}>
+            Sentiment Analysis
+          </h3>
+        </div>
+        <span
+          className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+          style={{
+            background: 'rgba(245, 158, 11, 0.1)',
+            color: 'var(--color-accent-primary)',
+            border: '1px solid rgba(245, 158, 11, 0.15)',
+          }}
+        >
+          {productName}
+        </span>
+      </div>
+
+      {/* Chart Container */}
+      <div
+        className="rounded-xl overflow-hidden"
+        style={{
+          background: 'var(--color-bg-secondary)',
+          border: '1px solid var(--color-glass-border)',
+        }}
+      >
+        {/* Column headers */}
+        <div
+          className="flex items-center px-4 py-2.5"
+          style={{
+            borderBottom: '1px solid var(--color-glass-border)',
+            background: 'var(--color-bg-tertiary)',
+          }}
+        >
+          <div className="flex items-center justify-end" style={{ width: '35%', paddingRight: '12px' }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#fb7185', opacity: 0.7 }}>
+              Negative
+            </span>
+          </div>
+          <div className="flex items-center justify-center" style={{ width: '30%' }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
+              Aspect
+            </span>
+          </div>
+          <div className="flex items-center" style={{ width: '35%', paddingLeft: '12px' }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#34d399', opacity: 0.7 }}>
+              Positive
+            </span>
+          </div>
+        </div>
+
+        {/* Rows */}
+        <div>
+          {sorted.map((aspect, index) => {
+            const agreementPct = Math.round(aspect.agreement_score * 100)
+            const sentimentLabel = getSentimentLabel(aspect.average_sentiment)
+            const isPositive = aspect.positive_pct >= aspect.negative_pct
+
+            return (
+              <motion.div
+                key={aspect.aspect}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.4, delay: 0.15 + index * 0.06 }}
+                className="flex items-center px-4"
+                style={{
+                  minHeight: '52px',
+                  borderBottom: index < sorted.length - 1 ? '1px solid rgba(255,255,255,0.03)' : undefined,
+                  background: index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)',
+                }}
+              >
+                {/* Left side — negative bar (grows right-to-left) */}
+                <div className="flex items-center justify-end" style={{ width: '35%', paddingRight: '12px', gap: '8px' }}>
+                  <span
+                    className="text-[11px] font-medium tabular-nums flex-shrink-0"
+                    style={{
+                      color: aspect.negative_pct > 0 ? '#fb7185' : 'var(--color-text-muted)',
+                      opacity: aspect.negative_pct > 0 ? 1 : 0.4,
+                      minWidth: '32px',
+                      textAlign: 'right',
+                    }}
+                  >
+                    {aspect.negative_pct > 0 ? `${aspect.negative_pct}%` : '—'}
+                  </span>
+                  <div
+                    className="relative overflow-hidden rounded-l-sm"
+                    style={{
+                      width: '100%',
+                      maxWidth: '140px',
+                      height: '18px',
+                      background: 'rgba(255,255,255,0.03)',
+                      borderRadius: '3px 0 0 3px',
+                    }}
+                  >
+                    <motion.div
+                      className="absolute top-0 right-0 h-full"
+                      style={{
+                        background: 'linear-gradient(270deg, rgba(251,113,133,0.85), rgba(251,113,133,0.4))',
+                        borderRadius: '3px 0 0 3px',
+                      }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${aspect.negative_pct}%` }}
+                      transition={{ duration: 0.7, delay: 0.2 + index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                    />
+                  </div>
+                </div>
+
+                {/* Center — aspect label */}
+                <div
+                  className="flex flex-col items-center justify-center flex-shrink-0"
+                  style={{
+                    width: '30%',
+                    borderLeft: '1px solid rgba(255,255,255,0.06)',
+                    borderRight: '1px solid rgba(255,255,255,0.06)',
+                    padding: '6px 8px',
+                  }}
+                >
+                  <span
+                    className="text-[12px] font-semibold text-center leading-tight"
+                    style={{
+                      color: 'var(--color-text-primary)',
+                      letterSpacing: '-0.01em',
+                    }}
+                  >
+                    {formatAspect(aspect.aspect)}
+                  </span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span
+                      className="text-[9px] font-medium"
+                      style={{
+                        color: isPositive ? '#34d399' : '#fb7185',
+                        opacity: 0.8,
+                      }}
+                    >
+                      {sentimentLabel}
+                    </span>
+                    <span className="text-[9px]" style={{ color: 'var(--color-text-muted)' }}>·</span>
+                    <div className="flex items-center gap-1" title={`${agreementPct}% reviewer agreement`}>
+                      {/* Agreement dots — 5 dots to visualize agreement level */}
+                      <div className="flex gap-px">
+                        {[...Array(5)].map((_, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              width: '4px',
+                              height: '4px',
+                              borderRadius: '1px',
+                              background: i < Math.round(aspect.agreement_score * 5)
+                                ? getAgreementColor(aspect.agreement_score)
+                                : 'rgba(255,255,255,0.08)',
+                              transition: 'background 0.3s',
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-[9px] tabular-nums" style={{ color: 'var(--color-text-muted)' }}>
+                        {aspect.review_count}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right side — positive bar (grows left-to-right) */}
+                <div className="flex items-center" style={{ width: '35%', paddingLeft: '12px', gap: '8px' }}>
+                  <div
+                    className="relative overflow-hidden"
+                    style={{
+                      width: '100%',
+                      maxWidth: '140px',
+                      height: '18px',
+                      background: 'rgba(255,255,255,0.03)',
+                      borderRadius: '0 3px 3px 0',
+                    }}
+                  >
+                    <motion.div
+                      className="absolute top-0 left-0 h-full"
+                      style={{
+                        background: 'linear-gradient(90deg, rgba(52,211,153,0.85), rgba(52,211,153,0.4))',
+                        borderRadius: '0 3px 3px 0',
+                      }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${aspect.positive_pct}%` }}
+                      transition={{ duration: 0.7, delay: 0.2 + index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                    />
+                  </div>
+                  <span
+                    className="text-[11px] font-medium tabular-nums flex-shrink-0"
+                    style={{
+                      color: aspect.positive_pct > 0 ? '#34d399' : 'var(--color-text-muted)',
+                      opacity: aspect.positive_pct > 0 ? 1 : 0.4,
+                      minWidth: '32px',
+                    }}
+                  >
+                    {aspect.positive_pct > 0 ? `${aspect.positive_pct}%` : '—'}
+                  </span>
+                </div>
+              </motion.div>
+            )
+          })}
+        </div>
+
+        {/* Footer legend */}
+        <div
+          className="flex items-center justify-between px-4 py-2"
+          style={{
+            borderTop: '1px solid var(--color-glass-border)',
+            background: 'var(--color-bg-tertiary)',
+          }}
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#34d399', opacity: 0.7 }} />
+              <span className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Positive</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#fb7185', opacity: 0.7 }} />
+              <span className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Negative</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="flex gap-px">
+              {[...Array(5)].map((_, i) => (
+                <div
+                  key={i}
+                  style={{
+                    width: '4px',
+                    height: '4px',
+                    borderRadius: '1px',
+                    background: i < 4 ? '#fbbf24' : 'rgba(255,255,255,0.08)',
+                  }}
+                />
+              ))}
+            </div>
+            <span className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Agreement</span>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+// Comparison table component — duel-style racing bars with side-by-side scores
+function ComparisonTable({ products, aspectsCompared, aspectWinners, recommendation }: {
+  products: ComparisonProduct[]
+  aspectsCompared: string[]
+  aspectWinners: Record<string, { winner: string; score: number }>
+  recommendation: string
+}) {
+  if (!products || products.length === 0 || !aspectsCompared || aspectsCompared.length === 0) return null
+
+  const formatAspect = (aspect: string) =>
+    aspect.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+  const getScoreColor = (score: number) => {
+    if (score >= 0.5) return '#34d399'
+    if (score >= 0.2) return '#6ee7b7'
+    if (score >= -0.2) return '#fbbf24'
+    if (score >= -0.5) return '#fb7185'
+    return '#ef4444'
+  }
+
+  const getScorePct = (score: number) => Math.round((score + 1) * 50)
+
+  // Assign each product a distinct color for its bars
+  const productColors = ['#38bdf8', '#f59e0b'] // sky blue vs amber
+  const productColorsFaded = ['rgba(56,189,248,0.15)', 'rgba(245,158,11,0.15)']
+
+  // Count wins per product
+  const winCounts: Record<string, number> = {}
+  products.forEach(p => { winCounts[p.name] = 0 })
+  Object.values(aspectWinners).forEach(w => {
+    if (w?.winner && winCounts[w.winner] !== undefined) winCounts[w.winner]++
+  })
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      className="mt-4"
+    >
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-3">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 4h5v8H2V4z" fill="#38bdf8" opacity="0.6" rx="1" />
+          <path d="M9 4h5v8H9V4z" fill="#f59e0b" opacity="0.6" rx="1" />
+          <path d="M7 2v12" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+        </svg>
+        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: '-0.01em' }}>
+          Product Comparison
+        </h3>
+      </div>
+
+      <div
+        className="rounded-xl overflow-hidden"
+        style={{
+          background: 'var(--color-bg-secondary)',
+          border: '1px solid var(--color-glass-border)',
+        }}
+      >
+        {/* Product header row */}
+        <div
+          className="flex items-stretch"
+          style={{
+            borderBottom: '1px solid var(--color-glass-border)',
+            background: 'var(--color-bg-tertiary)',
+          }}
+        >
+          {products.map((product, pIdx) => (
+            <div
+              key={product.name}
+              className="flex-1 flex items-center justify-center gap-3 py-3 px-4"
+              style={{
+                borderRight: pIdx < products.length - 1 ? '1px solid var(--color-glass-border)' : undefined,
+              }}
+            >
+              <div
+                className="flex-shrink-0"
+                style={{
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '3px',
+                  background: productColors[pIdx] || '#888',
+                  boxShadow: `0 0 8px ${productColors[pIdx] || '#888'}40`,
+                }}
+              />
+              <div className="text-center">
+                <div className="text-[13px] font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: '-0.01em' }}>
+                  {product.name}
+                </div>
+                {product.brand && (
+                  <div className="text-[10px] text-[var(--color-text-muted)]">{product.brand}</div>
+                )}
+              </div>
+              <span
+                className="text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded"
+                style={{
+                  background: productColorsFaded[pIdx],
+                  color: productColors[pIdx],
+                }}
+              >
+                {winCounts[product.name] || 0}W
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Aspect rows — racing bar style */}
+        <div>
+          {aspectsCompared.map((aspect, index) => {
+            const winner = aspectWinners[aspect]
+            const scores = products.map(p => p.aspects[aspect])
+            const hasAnyData = scores.some(s => s !== undefined)
+
+            if (!hasAnyData) return null
+
+            return (
+              <motion.div
+                key={aspect}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.4, delay: 0.15 + index * 0.06 }}
+                className="px-4"
+                style={{
+                  paddingTop: '10px',
+                  paddingBottom: '10px',
+                  borderBottom: index < aspectsCompared.length - 1 ? '1px solid rgba(255,255,255,0.03)' : undefined,
+                  background: index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)',
+                }}
+              >
+                {/* Aspect label */}
+                <div className="flex items-center justify-between mb-2">
+                  <span
+                    className="text-[11px] font-semibold uppercase"
+                    style={{ color: 'var(--color-text-tertiary)', letterSpacing: '0.04em' }}
+                  >
+                    {formatAspect(aspect)}
+                  </span>
+                  {winner && (
+                    <span
+                      className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
+                      style={{
+                        background: 'rgba(245,158,11,0.1)',
+                        color: 'var(--color-accent-primary)',
+                        border: '1px solid rgba(245,158,11,0.15)',
+                      }}
+                    >
+                      {winner.winner.split(' ').slice(-1)[0]}
+                    </span>
+                  )}
+                </div>
+
+                {/* Racing bars — one per product */}
+                <div className="flex flex-col gap-1.5">
+                  {products.map((product, pIdx) => {
+                    const aspectData = product.aspects[aspect]
+                    const pct = aspectData ? getScorePct(aspectData.sentiment_score) : 0
+                    const isWinner = winner?.winner === product.name
+                    const color = productColors[pIdx] || '#888'
+
+                    return (
+                      <div key={product.name} className="flex items-center gap-2">
+                        {/* Product initial */}
+                        <span
+                          className="text-[10px] font-semibold flex-shrink-0 tabular-nums"
+                          style={{
+                            color: aspectData ? color : 'var(--color-text-muted)',
+                            minWidth: '18px',
+                            textAlign: 'right',
+                            opacity: aspectData ? 1 : 0.4,
+                          }}
+                        >
+                          {product.name.split(' ')[0].charAt(0)}{product.name.split(' ').length > 1 ? product.name.split(' ').slice(-1)[0].charAt(0) : ''}
+                        </span>
+
+                        {/* Bar track */}
+                        <div
+                          className="flex-1 relative overflow-hidden"
+                          style={{
+                            height: '14px',
+                            background: 'rgba(255,255,255,0.03)',
+                            borderRadius: '3px',
+                          }}
+                        >
+                          {aspectData ? (
+                            <motion.div
+                              className="absolute top-0 left-0 h-full"
+                              style={{
+                                background: isWinner
+                                  ? `linear-gradient(90deg, ${color}dd, ${color}88)`
+                                  : `linear-gradient(90deg, ${color}88, ${color}44)`,
+                                borderRadius: '3px',
+                                boxShadow: isWinner ? `0 0 12px ${color}30` : undefined,
+                              }}
+                              initial={{ width: 0 }}
+                              animate={{ width: `${pct}%` }}
+                              transition={{ duration: 0.8, delay: 0.2 + index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                            />
+                          ) : (
+                            <div
+                              className="absolute inset-0 flex items-center justify-center"
+                              style={{ color: 'var(--color-text-muted)', fontSize: '9px', letterSpacing: '0.05em' }}
+                            >
+                              No reviews
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Score label */}
+                        <span
+                          className="text-[11px] font-semibold tabular-nums flex-shrink-0"
+                          style={{
+                            color: aspectData ? getScoreColor(aspectData.sentiment_score) : 'var(--color-text-muted)',
+                            minWidth: '30px',
+                            textAlign: 'right',
+                            opacity: aspectData ? 1 : 0.3,
+                          }}
+                        >
+                          {aspectData ? `${pct}%` : '—'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </motion.div>
+            )
+          })}
+        </div>
+
+        {/* Verdict banner */}
+        {recommendation && (
+          <div
+            className="px-4 py-3 flex items-start gap-3"
+            style={{
+              borderTop: '1px solid var(--color-glass-border)',
+              background: 'linear-gradient(135deg, rgba(245,158,11,0.06) 0%, rgba(245,158,11,0.02) 100%)',
+            }}
+          >
+            <svg
+              width="16" height="16" viewBox="0 0 16 16" fill="none"
+              className="flex-shrink-0 mt-0.5"
+              style={{ color: 'var(--color-accent-primary)' }}
+            >
+              <path d="M8 1l2.1 4.3 4.7.7-3.4 3.3.8 4.7L8 11.8 3.8 14l.8-4.7L1.2 6l4.7-.7L8 1z" fill="currentColor" opacity="0.8" />
+            </svg>
+            <div>
+              <span
+                className="text-[10px] font-semibold uppercase"
+                style={{ color: 'var(--color-accent-primary)', letterSpacing: '0.06em' }}
+              >
+                Verdict
+              </span>
+              <p className="text-[12px] leading-relaxed mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>
+                {recommendation}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
 // Attachments renderer
 function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
   return (
@@ -683,6 +1325,44 @@ function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
               key={`attachment-${index}`}
               listings={data.listings}
               productName={data.product_name}
+            />
+          )
+        }
+        if (attachment.type === 'semantic_search_results') {
+          const data = attachment.data as { query: string; results: SemanticSearchResult[]; total: number; search_type: string }
+          return (
+            <SemanticSearchResults
+              key={`attachment-${index}`}
+              results={data.results}
+              query={data.query}
+              total={data.total}
+            />
+          )
+        }
+        if (attachment.type === 'sentiment_analysis') {
+          const data = attachment.data as { product_name: string; aspects: AspectSentiment[] }
+          return (
+            <SentimentChart
+              key={`attachment-${index}`}
+              aspects={data.aspects}
+              productName={data.product_name}
+            />
+          )
+        }
+        if (attachment.type === 'comparison_table') {
+          const data = attachment.data as {
+            products: ComparisonProduct[]
+            aspects_compared: string[]
+            aspect_winners: Record<string, { winner: string; score: number }>
+            recommendation: string
+          }
+          return (
+            <ComparisonTable
+              key={`attachment-${index}`}
+              products={data.products}
+              aspectsCompared={data.aspects_compared}
+              aspectWinners={data.aspect_winners}
+              recommendation={data.recommendation}
             />
           )
         }
@@ -985,6 +1665,12 @@ export function ChatPage() {
   const handleNewChat = () => {
     clearChat()
     setSidebarOpen(false)
+    // Clear the ?q= search param so the initial query doesn't re-fire
+    if (searchParams.has('q')) {
+      navigate('/chat', { replace: true })
+    }
+    // Reset the ref so a fresh navigation with ?q= can work again
+    initialQuerySentRef.current = false
   }
 
   return (

@@ -87,6 +87,23 @@ After calling `get_reviews_summary`:
 - Call `find_marketplace_listings(product_name, count_per_marketplace=2)`
 - Present Amazon and eBay links with prices
 
+### Step 5: Comparison Flow (when user asks to compare)
+When the user asks to compare products (e.g., "compare X vs Y", "which is better, X or Y", "X vs Y"):
+1. Identify ALL products being compared
+2. For each product, follow Steps 1-2 (check cache, ingest if needed)
+3. Call `get_reviews_summary(product_name)` for EACH product — this is critical because it generates sentiment analysis data needed for the comparison table. Do NOT skip this for any product, even if cached.
+4. After summaries are ready for all products, call `compare_products(product_ids=[...])` with the product IDs from the `product.id` field in each `get_reviews_summary` result
+5. Present your response with:
+   - Brief individual summaries for each product
+   - The comparison results showing which product wins in each aspect
+   - A clear recommendation based on the comparison data
+- IMPORTANT: You MUST call `get_reviews_summary` for each product before calling `compare_products`. Skipping this will result in missing comparison data.
+
+### Step 6: Knowledge Search (when user asks broad questions)
+When the user asks about topics across reviews (e.g., "what do reviewers say about battery life"):
+- Call `semantic_search(query)` to find relevant review content by meaning
+- Present the matching results with reviewer attribution
+
 ## Function Reference:
 - `check_product_cache(product_name)` - Check if we have cached reviews
 - `search_youtube_reviews(product_name, limit)` - Find YouTube review URLs
@@ -94,8 +111,10 @@ After calling `get_reviews_summary`:
 - `ingest_reviews_batch(product_name, youtube_urls, blog_urls)` - Ingest all reviews in parallel (PREFERRED)
 - `ingest_youtube_review(video_url, product_name)` - Analyze and store YouTube review (fallback only)
 - `ingest_blog_review(url, product_name)` - Scrape and store blog review (fallback only)
-- `get_reviews_summary(product_name)` - Get per-reviewer and overall summaries
+- `get_reviews_summary(product_name)` - Get per-reviewer and overall summaries with sentiment analysis
 - `find_marketplace_listings(product_name, count_per_marketplace)` - Find where to buy
+- `compare_products(product_ids, aspects)` - Compare products side by side based on review sentiment
+- `semantic_search(query, limit)` - Search across all review content by meaning (vector search)
 
 ## Guidelines:
 1. **Always cite sources**: When sharing information, mention which reviewer said it
@@ -114,7 +133,8 @@ After calling `get_reviews_summary`:
 Helpful, knowledgeable, and conversational. Like talking to a tech-savvy friend who has done the research for you.
 
 ## CRITICAL REMINDER:
-- After calling `get_reviews_summary`, you MUST generate a text response - do NOT call any more functions
+- For SINGLE product queries: After calling `get_reviews_summary`, STOP calling functions and write your text response
+- For COMPARISON queries: After calling `get_reviews_summary` for each product, call `compare_products` THEN write your text response
 - The text response should summarize the review data in a helpful, conversational way
 - If cache has reviews, you do NOT need to search for more - just use `get_reviews_summary` and respond"""
 
@@ -450,7 +470,7 @@ class ChatService:
 
         history = []
         for msg in messages:
-            role = "user" if msg.role.value == "user" else "model"
+            role = "user" if msg.role.value == "user" else self.provider.assistant_role
             history.append(self.provider.build_content(role, msg.content))
 
         return history
@@ -468,7 +488,7 @@ class ChatService:
 
         history = []
         for msg in messages:
-            role = "user" if msg.role.value == "user" else "model"
+            role = "user" if msg.role.value == "user" else self.provider.assistant_role
             history.append(self.provider.build_content(role, msg.content))
 
         return history
@@ -554,6 +574,17 @@ class ChatService:
                         }
                     ))
 
+                # Extract sentiment analysis from aspect_sentiments
+                aspect_sentiments = result.get("aspect_sentiments", [])
+                if aspect_sentiments:
+                    attachments.append(Attachment(
+                        type="sentiment_analysis",
+                        data={
+                            "product_name": result.get("product", {}).get("name", ""),
+                            "aspects": aspect_sentiments,
+                        }
+                    ))
+
             # Note: check_product_cache card extraction removed to avoid duplicates
             # when get_reviews_summary is also called (which has better summary data)
 
@@ -628,6 +659,52 @@ class ChatService:
                         data={
                             "product_name": result.get("product", {}).get("name", ""),
                             "cards": reviewer_cards
+                        }
+                    ))
+
+            # Extract semantic search results
+            elif func_name == "semantic_search" and result.get("results"):
+                search_results = result.get("results", [])
+                if search_results:
+                    attachments.append(Attachment(
+                        type="semantic_search_results",
+                        data={
+                            "query": result.get("query", ""),
+                            "results": [
+                                {
+                                    "score": r.get("score"),
+                                    "product_name": r.get("product_name", ""),
+                                    "reviewer_name": r.get("reviewer_name", ""),
+                                    "content": r.get("content", ""),
+                                    "aspect": r.get("aspect"),
+                                    "source_url": r.get("source_url"),
+                                }
+                                for r in search_results[:10]
+                            ],
+                            "total": result.get("total", 0),
+                            "search_type": result.get("search_type", "vector"),
+                        }
+                    ))
+
+            # Extract comparison table from compare_products
+            elif func_name == "compare_products" and result.get("products"):
+                products = result.get("products", [])
+                aspects_compared = result.get("aspects_compared", [])
+                if products and aspects_compared:
+                    attachments.append(Attachment(
+                        type="comparison_table",
+                        data={
+                            "products": [
+                                {
+                                    "name": p.get("name", ""),
+                                    "brand": p.get("brand", ""),
+                                    "aspects": p.get("aspects", {}),
+                                }
+                                for p in products
+                            ],
+                            "aspects_compared": aspects_compared,
+                            "aspect_winners": result.get("aspect_winners", {}),
+                            "recommendation": result.get("recommendation", ""),
                         }
                     ))
 

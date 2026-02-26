@@ -77,7 +77,8 @@ export function useChat() {
     setMessages([])
     setConversationId(null)
     setProgressSteps([])
-  }, [])
+    mutation.reset()
+  }, [mutation])
 
   return {
     messages,

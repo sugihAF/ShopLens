@@ -13,6 +13,7 @@ This module implements:
 import re
 import json
 import asyncio
+import statistics
 import httpx
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
@@ -1120,6 +1121,198 @@ async def ingest_reviews_batch(db: AsyncSession, args: Dict[str, Any]) -> Dict[s
 
 
 # =============================================================================
+# Opinion Extraction Helper
+# =============================================================================
+
+STANDARDIZED_ASPECTS = [
+    "battery", "camera", "display", "performance", "build_quality",
+    "audio", "software", "value", "design", "connectivity",
+]
+
+
+async def _extract_opinions_and_build_consensus(
+    db: AsyncSession,
+    product: "Product",
+    all_reviews_text: str,
+) -> List[Dict[str, Any]]:
+    """
+    Extract per-reviewer, per-aspect sentiment opinions via a separate LLM call,
+    then build consensus aggregates. Non-fatal: returns [] on failure.
+
+    Returns list of aspect_sentiment dicts for the response payload.
+    """
+    from app.crud.opinion import opinion_crud
+    from app.crud.consensus import consensus_crud
+
+    try:
+        # Build reviewer_name → review mapping
+        reviewer_to_review = {}
+        for review in product.reviews:
+            name = review.reviewer.name if review.reviewer else "Unknown"
+            reviewer_to_review[name] = review
+
+        reviewer_names = list(reviewer_to_review.keys())
+
+        prompt = f"""Analyze the following reviews of "{product.name}" and extract per-reviewer sentiment for each applicable aspect.
+
+Aspects to evaluate: {', '.join(STANDARDIZED_ASPECTS)}
+
+Reviewers: {', '.join(reviewer_names)}
+
+For each opinion, provide:
+- reviewer_name: EXACTLY matching one of the reviewer names listed above
+- aspect: one of the standardized aspects
+- sentiment: float from -1.0 (very negative) to 1.0 (very positive)
+- confidence: float from 0.0 to 1.0 (how clearly the reviewer expressed this opinion)
+- quote: a direct supporting quote from the review (short, 1-2 sentences)
+- summary: brief summary of this opinion (1 sentence)
+
+Only include aspects that the reviewer actually discussed. Skip aspects not mentioned.
+
+Reviews:
+{all_reviews_text[:25000]}
+
+Return ONLY valid JSON:
+{{
+  "opinions": [
+    {{
+      "reviewer_name": "Exact name",
+      "aspect": "battery",
+      "sentiment": 0.75,
+      "confidence": 0.9,
+      "quote": "Direct quote",
+      "summary": "Brief summary"
+    }}
+  ]
+}}"""
+
+        response_text = await _llm_generate_text(prompt, timeout=90, temperature=0.1)
+
+        if not response_text:
+            logger.warning("Opinion extraction: empty LLM response")
+            return []
+
+        # Parse JSON
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        if response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        if not json_match:
+            logger.warning("Opinion extraction: no JSON found in response")
+            return []
+
+        data = json.loads(json_match.group())
+        raw_opinions = data.get("opinions", [])
+
+        if not raw_opinions:
+            logger.warning("Opinion extraction: no opinions in response")
+            return []
+
+        # Map reviewer names with fuzzy fallback
+        def _find_review(name: str):
+            # Exact match
+            if name in reviewer_to_review:
+                return reviewer_to_review[name]
+            # Case-insensitive partial match
+            name_lower = name.lower()
+            for rname, review in reviewer_to_review.items():
+                if name_lower in rname.lower() or rname.lower() in name_lower:
+                    return review
+            return None
+
+        # Build opinion records
+        opinion_records = []
+        for op in raw_opinions:
+            review = _find_review(op.get("reviewer_name", ""))
+            if not review:
+                continue
+            aspect = op.get("aspect", "").lower().strip()
+            if aspect not in STANDARDIZED_ASPECTS:
+                continue
+            sentiment = max(-1.0, min(1.0, float(op.get("sentiment", 0))))
+            confidence = max(0.0, min(1.0, float(op.get("confidence", 0.5))))
+            opinion_records.append({
+                "review_id": review.id,
+                "aspect": aspect,
+                "sentiment": sentiment,
+                "confidence": confidence,
+                "quote": (op.get("quote") or "")[:500],
+                "summary": (op.get("summary") or "")[:300],
+            })
+
+        if not opinion_records:
+            logger.warning("Opinion extraction: no valid opinions after mapping")
+            return []
+
+        # Delete + insert in a savepoint so partial failure doesn't leave orphans
+        review_ids = [r.id for r in product.reviews]
+        async with db.begin_nested():
+            await opinion_crud.delete_for_reviews(db, review_ids)
+            created = await opinion_crud.bulk_create(db, opinion_records)
+        log_detail(logger, f"Opinions: {len(created)} extracted for {product.name}")
+
+        # Build consensus per aspect
+        from collections import defaultdict
+        aspect_opinions: Dict[str, List[Dict]] = defaultdict(list)
+        for rec in opinion_records:
+            aspect_opinions[rec["aspect"]].append(rec)
+
+        aspect_sentiments = []
+        for aspect, ops in aspect_opinions.items():
+            sentiments = [op["sentiment"] for op in ops]
+            avg_sentiment = sum(sentiments) / len(sentiments)
+
+            if len(sentiments) > 1:
+                # Use pstdev (population) since we have all reviews, not a sample.
+                # Normalize by max possible stdev (1.0 for [-1,1] range) to get [0,1].
+                agreement = 1.0 - statistics.pstdev(sentiments)
+                agreement = max(0.0, min(1.0, agreement))
+            else:
+                agreement = 1.0
+
+            positive_count = sum(1 for s in sentiments if s > 0.1)
+            negative_count = sum(1 for s in sentiments if s < -0.1)
+            total = len(sentiments)
+            positive_pct = round(positive_count / total * 100) if total else 0
+            negative_pct = round(negative_count / total * 100) if total else 0
+
+            # Upsert consensus
+            await consensus_crud.upsert(
+                db,
+                product_id=product.id,
+                aspect=aspect,
+                average_sentiment=round(avg_sentiment, 3),
+                agreement_score=round(agreement, 3),
+                review_count=len(ops),
+                details={
+                    "positive_count": positive_count,
+                    "negative_count": negative_count,
+                    "neutral_count": total - positive_count - negative_count,
+                },
+            )
+
+            aspect_sentiments.append({
+                "aspect": aspect,
+                "average_sentiment": round(avg_sentiment, 3),
+                "positive_pct": positive_pct,
+                "negative_pct": negative_pct,
+                "review_count": len(ops),
+                "agreement_score": round(agreement, 3),
+            })
+
+        log_detail(logger, f"Consensus: {len(aspect_sentiments)} aspects for {product.name}")
+        return sorted(aspect_sentiments, key=lambda x: x["review_count"], reverse=True)
+
+    except Exception as e:
+        logger.error(f"Opinion extraction failed (non-fatal): {e}", exc_info=True)
+        return []
+
+
+# =============================================================================
 # Tool 6: Get Reviews Summary
 # =============================================================================
 
@@ -1148,6 +1341,73 @@ async def get_reviews_summary(db: AsyncSession, args: Dict[str, Any]) -> Dict[st
     cached_summary = await cache.get(summary_cache_key)
     if cached_summary is not None:
         logger.debug(f"Summary cache hit for: {product_name or product_id}")
+
+        # Check if consensus data exists — if not, run opinion extraction
+        # This handles products ingested before the opinion pipeline was added
+        product_info = cached_summary.get("product", {})
+        cached_product_id = product_info.get("id")
+        if cached_product_id:
+            from app.crud.consensus import consensus_crud
+            existing_consensus = await consensus_crud.get_by_product(db, product_id=cached_product_id)
+
+            if not existing_consensus:
+                # No consensus yet — need to run opinion extraction
+                logger.debug(f"Cache hit but no consensus for product {cached_product_id}, running extraction")
+                try:
+                    # Load product with reviews for extraction
+                    prod_result = await db.execute(
+                        select(Product)
+                        .options(selectinload(Product.reviews).selectinload(Review.reviewer))
+                        .where(Product.id == cached_product_id)
+                    )
+                    product_for_extraction = prod_result.scalar_one_or_none()
+
+                    if product_for_extraction and product_for_extraction.reviews:
+                        # Build review text
+                        reviews_context = []
+                        for review in product_for_extraction.reviews:
+                            reviewer_name = review.reviewer.name if review.reviewer else "Unknown"
+                            platform = review.reviewer.platform.value if review.reviewer else "unknown"
+                            reviews_context.append(f"""
+### {reviewer_name} ({platform})
+URL: {review.platform_url}
+
+{review.content}
+""")
+                        all_reviews_text = "\n---\n".join(reviews_context)
+                        aspect_sentiments = await _extract_opinions_and_build_consensus(
+                            db, product_for_extraction, all_reviews_text
+                        )
+                        await db.commit()
+                        cached_summary["aspect_sentiments"] = aspect_sentiments
+                except Exception as e:
+                    logger.warning(f"Opinion extraction on cache hit failed (non-fatal): {e}")
+                    cached_summary.setdefault("aspect_sentiments", [])
+            else:
+                # Consensus exists — build aspect_sentiments from it (no LLM call)
+                cached_summary["aspect_sentiments"] = [
+                    {
+                        "aspect": c.aspect,
+                        "average_sentiment": float(c.average_sentiment),
+                        "positive_pct": round(
+                            (c.details or {}).get("positive_count", 0)
+                            / max(c.review_count, 1) * 100
+                        ),
+                        "negative_pct": round(
+                            (c.details or {}).get("negative_count", 0)
+                            / max(c.review_count, 1) * 100
+                        ),
+                        "review_count": c.review_count,
+                        "agreement_score": float(c.agreement_score),
+                    }
+                    for c in existing_consensus
+                ]
+        else:
+            logger.warning(f"Cached summary missing product.id for '{product_name or product_id}', cannot check consensus")
+            cached_summary.setdefault("aspect_sentiments", [])
+
+        # Write enriched summary (with aspect_sentiments) back to cache
+        await cache.set(summary_cache_key, cached_summary, ttl=settings.CACHE_SUMMARY_TTL)
         return cached_summary
 
     # Find product
@@ -1283,6 +1543,11 @@ Return as JSON:
             await cache.set(summary_cache_key, fallback_result, ttl=settings.CACHE_SUMMARY_TTL)
             return fallback_result
 
+        # Extract opinions and build consensus (non-fatal, separate LLM call)
+        aspect_sentiments = await _extract_opinions_and_build_consensus(
+            db, product, all_reviews_text
+        )
+
         summary_result = {
             "status": "success",
             "product": {
@@ -1295,7 +1560,8 @@ Return as JSON:
             "overall_summary": data.get("overall_summary", ""),
             "common_pros": data.get("common_pros", []),
             "common_cons": data.get("common_cons", []),
-            "total_reviews": len(product.reviews)
+            "total_reviews": len(product.reviews),
+            "aspect_sentiments": aspect_sentiments,
         }
 
         # Cache the summary
