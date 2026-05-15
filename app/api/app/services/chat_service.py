@@ -1,5 +1,6 @@
 """Chat service with multi-provider LLM function calling integration."""
 
+import asyncio
 import json
 import time
 from typing import Optional, List, Dict, Any, Callable, Awaitable
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.circuit_breaker import gemini_breaker
+from app.services.chat_exceptions import ChatCancelled
 from app.core.logging import (
     get_logger, log_header, log_success, log_fail, log_detail, elapsed_str,
     BOLD, CYAN, DIM, GREEN, YELLOW, MAGENTA, RESET, LINE,
@@ -155,6 +157,8 @@ class ChatService:
         self.db = db
         self.provider: Optional[BaseLLMProvider] = None
         self.tools = None
+        self.current_conversation_id: Optional[UUID] = None
+        self.on_question: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None
         self._init_provider()
 
     def _init_provider(self):
@@ -172,6 +176,8 @@ class ChatService:
         request: ChatRequest,
         user_id: Optional[int] = None,
         on_progress: Optional[Callable[[Dict[str, str]], Awaitable[None]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        on_question: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None,
     ) -> ChatResponse:
         """
         Process a chat message using Gemini with function calling.
@@ -192,6 +198,11 @@ class ChatService:
                 "LLM provider is not initialized. Please check your API keys and LLM_PROVIDER setting."
             )
 
+        # Store on_question on the service so tools that opt in can reach it via
+        # the service context. No built-in tool consumes this in v1 — it's plumbed
+        # but unused. See docs/superpowers/specs/2026-05-15-chat-websocket-design.md.
+        self.on_question = on_question
+
         start_time = time.time()
         functions_called = []
         function_results = []  # Store function results for attachment extraction
@@ -211,6 +222,8 @@ class ChatService:
                 user_id=user_id,
                 title=self._generate_title(request.message)
             )
+
+        self.current_conversation_id = conversation.id
 
         # Save user message
         user_message = await conversation_crud.add_message(
@@ -288,6 +301,13 @@ class ChatService:
             # Handle function calling loop (provider-agnostic)
             iteration = 0
             while self.provider.has_function_call(response) and iteration < MAX_FUNCTION_CALL_ITERATIONS:
+                # Cooperative cancellation check — fires between tool calls.
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ChatCancelled(
+                        conversation_id=str(self.current_conversation_id),
+                        reason="user",
+                    )
+
                 # Extract function call from response
                 fc = self.provider.extract_function_call(response)
                 function_call_part = self.provider.extract_function_call_part(response)
@@ -415,6 +435,11 @@ class ChatService:
                     f"No function calls made for what appears to be a product question: {request.message[:100]}"
                 )
 
+        except ChatCancelled:
+            # Cancellation is signal flow, not an error — let it propagate so
+            # the WS supervisor can emit the `cancelled` event and persist a
+            # cancelled assistant message in place of the normal one.
+            raise
         except Exception as e:
             logger.error(f"LLM API error: {e}", exc_info=True)
             final_response = "I'm sorry, I encountered an error processing your request. Please try again."
