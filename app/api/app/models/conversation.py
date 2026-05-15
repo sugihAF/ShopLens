@@ -29,6 +29,13 @@ class MessageRole(str, enum.Enum):
     SYSTEM = "system"
 
 
+class MessageStatus(str, enum.Enum):
+    """Lifecycle status of a message."""
+    COMPLETE = "complete"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
 class Conversation(Base):
     """Conversation model representing a chat session."""
     __tablename__ = "conversations"
@@ -120,6 +127,11 @@ class Message(Base):
     # Message content
     role: Mapped[MessageRole] = mapped_column(Enum(MessageRole), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[MessageStatus] = mapped_column(
+        Enum(MessageStatus),
+        default=MessageStatus.COMPLETE,
+        nullable=False,
+    )
 
     # AI processing metadata (for assistant messages)
     intent: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

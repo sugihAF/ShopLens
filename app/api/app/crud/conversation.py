@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.crud.base import CRUDBase
-from app.models.conversation import Conversation, Message, MessageRole, ConversationStatus
+from app.models.conversation import Conversation, Message, MessageRole, MessageStatus, ConversationStatus
 from app.schemas.common import Message as MessageSchema
 
 
@@ -116,18 +116,22 @@ class CRUDConversation(CRUDBase[Conversation, ConversationCreate, ConversationUp
         intent: Optional[dict] = None,
         agent_metadata: Optional[dict] = None,
         sources: Optional[dict] = None,
-        attachments: Optional[dict] = None
+        attachments: Optional[dict] = None,
+        status: Optional[MessageStatus] = None,
     ) -> Message:
         """Add a message to a conversation."""
-        message = Message(
+        msg_kwargs = dict(
             conversation_id=conversation_id,
             role=MessageRole(role),
             content=content,
             intent=intent,
             agent_metadata=agent_metadata,
             sources=sources,
-            attachments=attachments
+            attachments=attachments,
         )
+        if status is not None:
+            msg_kwargs["status"] = status
+        message = Message(**msg_kwargs)
         db.add(message)
 
         # Update conversation's last_message_at
