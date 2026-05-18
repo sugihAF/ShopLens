@@ -24,6 +24,7 @@ export function useChat() {
             step: event.step,
             label: event.label ?? event.step,
             status: event.status,
+            detail: event.detail,
           }
           if (idx >= 0) {
             const updated = [...prev]
