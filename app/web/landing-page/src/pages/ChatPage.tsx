@@ -109,7 +109,7 @@ function ProgressSteps({ steps }: { steps: ProgressStep[] }) {
                 : 'text-[var(--color-text-secondary)]'
             }`}
           >
-            {step.label}{step.status === 'running' ? '...' : ''}
+            {step.label}{step.detail ? ` (${step.detail})` : ''}{step.status === 'running' ? '...' : ''}
           </span>
         </div>
       ))}
