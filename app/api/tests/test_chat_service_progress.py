@@ -99,3 +99,105 @@ async def test_emitter_resets_after_process_message(db_session, monkeypatch):
 
 async def _aresult(v):
     return v
+
+
+@pytest.mark.asyncio
+async def test_self_emit_allowlist_skips_auto_start_and_done(db_session, monkeypatch):
+    """For functions in SELF_EMITS_PROGRESS, chat_service must NOT emit the
+    auto start/done events under the bare function-name step."""
+    from app.services.chat_service import SELF_EMITS_PROGRESS
+    assert "ingest_reviews_batch" in SELF_EMITS_PROGRESS
+
+    service = ChatService(db_session)
+    if service.provider is None:
+        pytest.skip("LLM provider not initialized in test environment")
+
+    seen: list[dict] = []
+
+    async def on_progress(ev):
+        seen.append(ev)
+
+    call_count = {"n": 0}
+
+    async def fake_generate(_c, _cfg):
+        return {"_": "r"}
+
+    def fake_has_function_call(_r):
+        call_count["n"] += 1
+        return call_count["n"] == 1
+
+    def fake_extract_function_call(_r):
+        return {"name": "ingest_reviews_batch",
+                "args": {"product_name": "Probe", "youtube_urls": ["x"]}}
+
+    monkeypatch.setattr(service.provider, "generate", fake_generate)
+    monkeypatch.setattr(service.provider, "has_function_call", fake_has_function_call)
+    monkeypatch.setattr(service.provider, "extract_function_call", fake_extract_function_call)
+    monkeypatch.setattr(service.provider, "extract_function_call_part", lambda _r: None)
+    monkeypatch.setattr(service.provider, "build_function_response", lambda *a, **k: [])
+    monkeypatch.setattr(service.provider, "extract_text", lambda _r: "ok")
+    monkeypatch.setattr(service.provider, "build_config", lambda **k: None)
+    monkeypatch.setattr(service.provider, "build_content",
+                        lambda role, msg: {"role": role, "text": msg})
+
+    async def fake_execute_function(_db, _name, _args):
+        return {"status": "success"}
+
+    monkeypatch.setattr("app.services.chat_service.execute_function", fake_execute_function)
+
+    request = ChatRequest(message="hi", conversation_id=None)
+    await service.process_message(request, user_id=None, on_progress=on_progress)
+
+    bare_steps = [ev for ev in seen if ev.get("step") == "ingest_reviews_batch"]
+    assert bare_steps == [], (
+        f"chat_service emitted auto start/done for a self-emitting function; "
+        f"got: {bare_steps}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_self_emit_function_still_gets_auto_start_and_done(db_session, monkeypatch):
+    """Regression: functions NOT in SELF_EMITS_PROGRESS keep their auto emits."""
+    service = ChatService(db_session)
+    if service.provider is None:
+        pytest.skip("LLM provider not initialized in test environment")
+
+    seen: list[dict] = []
+
+    async def on_progress(ev):
+        seen.append(ev)
+
+    call_count = {"n": 0}
+
+    async def fake_generate(_c, _cfg):
+        return {"_": "r"}
+
+    def fake_has_function_call(_r):
+        call_count["n"] += 1
+        return call_count["n"] == 1
+
+    def fake_extract_function_call(_r):
+        return {"name": "check_product_cache", "args": {"product_name": "Probe"}}
+
+    monkeypatch.setattr(service.provider, "generate", fake_generate)
+    monkeypatch.setattr(service.provider, "has_function_call", fake_has_function_call)
+    monkeypatch.setattr(service.provider, "extract_function_call", fake_extract_function_call)
+    monkeypatch.setattr(service.provider, "extract_function_call_part", lambda _r: None)
+    monkeypatch.setattr(service.provider, "build_function_response", lambda *a, **k: [])
+    monkeypatch.setattr(service.provider, "extract_text", lambda _r: "ok")
+    monkeypatch.setattr(service.provider, "build_config", lambda **k: None)
+    monkeypatch.setattr(service.provider, "build_content",
+                        lambda role, msg: {"role": role, "text": msg})
+    monkeypatch.setattr(
+        "app.services.chat_service.execute_function",
+        lambda *a, **k: _aresult({"status": "success"}),
+    )
+
+    request = ChatRequest(message="hi", conversation_id=None)
+    await service.process_message(request, user_id=None, on_progress=on_progress)
+
+    steps_for_fn = [ev for ev in seen if ev.get("step") == "check_product_cache"]
+    statuses = [ev["status"] for ev in steps_for_fn]
+    assert "running" in statuses and "done" in statuses, (
+        f"expected running+done for check_product_cache; got: {steps_for_fn}"
+    )

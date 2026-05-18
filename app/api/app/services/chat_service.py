@@ -49,6 +49,12 @@ FUNCTION_LABELS = {
     "semantic_search": "Searching knowledge base",
 }
 
+# Functions that emit their own progress events under composite step ids
+# (e.g. "ingest_reviews_batch:iphone-15-pro"). chat_service skips its auto
+# start/done emits for these so they don't produce orphan rows.
+# See: docs/superpowers/specs/2026-05-18-granular-progress-events-design.md
+SELF_EMITS_PROGRESS = {"ingest_reviews_batch"}
+
 # System prompt for ShopLens AI
 SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make informed purchasing decisions by aggregating and analyzing product reviews from trusted tech reviewers on YouTube and tech blogs.
 
@@ -328,8 +334,8 @@ class ChatService:
                 )
                 logger.info(f"{BOLD}{CYAN}[fn {fn_step}]{RESET} {function_name}({short_args})")
 
-                # Emit progress: function starting
-                if on_progress:
+                # Emit progress: function starting (skip for self-emitting tools)
+                if on_progress and function_name not in SELF_EMITS_PROGRESS:
                     await on_progress({
                         "type": "progress",
                         "step": function_name,
@@ -363,8 +369,8 @@ class ChatService:
                 else:
                     logger.info(f"  {DIM}→ {result_status or 'done'}{RESET} {fn_elapsed}")
 
-                # Emit progress: function done
-                if on_progress:
+                # Emit progress: function done (skip for self-emitting tools)
+                if on_progress and function_name not in SELF_EMITS_PROGRESS:
                     await on_progress({
                         "type": "progress",
                         "step": function_name,
