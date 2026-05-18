@@ -26,6 +26,7 @@ from app.schemas.chat import (
 )
 from app.functions.registry import FUNCTION_DECLARATIONS, execute_function
 from app.services.llm_service import get_llm_provider, BaseLLMProvider
+from app.services import progress as progress_ctx
 
 logger = get_logger(__name__)
 
@@ -236,6 +237,7 @@ class ChatService:
         # Get conversation history for context (excluding the message we just saved)
         history = await self._build_chat_history_excluding_last(conversation.id)
 
+        progress_token = progress_ctx.set_emitter(on_progress) if on_progress else None
         try:
             # Check circuit breaker before making Gemini calls
             if not gemini_breaker.allow_request():
@@ -444,6 +446,9 @@ class ChatService:
             logger.error(f"LLM API error: {e}", exc_info=True)
             final_response = "I'm sorry, I encountered an error processing your request. Please try again."
             functions_called = []
+        finally:
+            if progress_token is not None:
+                progress_ctx.reset_emitter(progress_token)
 
         execution_time = int((time.time() - start_time) * 1000)
 
