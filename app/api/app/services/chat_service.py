@@ -55,6 +55,29 @@ FUNCTION_LABELS = {
 # See: docs/superpowers/specs/2026-05-18-granular-progress-events-design.md
 SELF_EMITS_PROGRESS = {"ingest_reviews_batch"}
 
+# Functions whose progress label should be enriched with the product / query
+# argument so users see e.g. "Searching YouTube for iPhone 15 Pro".
+LABEL_ENRICHED = {
+    "search_youtube_reviews",
+    "search_blog_reviews",
+    "get_reviews_summary",
+}
+
+
+def label_for(fn_name: str, args: dict) -> str:
+    """Build the progress label for a function call.
+
+    - For functions in LABEL_ENRICHED, append "for <product_name or query>".
+    - For others, return the bare base label from FUNCTION_LABELS.
+    - For unknown functions, return the function name itself.
+    """
+    base = FUNCTION_LABELS.get(fn_name, fn_name)
+    if fn_name in LABEL_ENRICHED:
+        target = args.get("product_name") or args.get("query")
+        if target:
+            return f"{base} for {target}"
+    return base
+
 # System prompt for ShopLens AI
 SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make informed purchasing decisions by aggregating and analyzing product reviews from trusted tech reviewers on YouTube and tech blogs.
 
@@ -340,7 +363,7 @@ class ChatService:
                         "type": "progress",
                         "step": function_name,
                         "status": "running",
-                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                        "label": label_for(function_name, function_args),
                     })
 
                 # Execute the function
@@ -375,7 +398,7 @@ class ChatService:
                         "type": "progress",
                         "step": function_name,
                         "status": "done",
-                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                        "label": label_for(function_name, function_args),
                     })
 
                 # Store function result for attachment extraction

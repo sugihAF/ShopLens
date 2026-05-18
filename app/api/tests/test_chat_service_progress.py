@@ -201,3 +201,47 @@ async def test_non_self_emit_function_still_gets_auto_start_and_done(db_session,
     assert "running" in statuses and "done" in statuses, (
         f"expected running+done for check_product_cache; got: {steps_for_fn}"
     )
+
+
+def test_label_for_enriches_allowlisted_functions():
+    """label_for() must append 'for <product>' for search/summary functions."""
+    from app.services.chat_service import label_for
+
+    assert label_for("search_youtube_reviews", {"product_name": "iPhone 15 Pro"}) \
+        == "Searching YouTube for iPhone 15 Pro"
+    assert label_for("search_blog_reviews", {"product_name": "Galaxy S25"}) \
+        == "Searching blog reviews for Galaxy S25"
+    assert label_for("get_reviews_summary", {"product_name": "Pixel 8"}) \
+        == "Generating summary for Pixel 8"
+
+
+def test_label_for_falls_back_to_query_arg():
+    """label_for() reads `query` if `product_name` is missing."""
+    from app.services.chat_service import label_for
+
+    assert label_for("search_youtube_reviews", {"query": "best headphones"}) \
+        == "Searching YouTube for best headphones"
+
+
+def test_label_for_unenriched_function_returns_base_label():
+    """Functions not in the enrichment set must return the bare base label."""
+    from app.services.chat_service import label_for
+
+    assert label_for("check_product_cache", {"product_name": "X"}) \
+        == "Checking product cache"
+    assert label_for("find_marketplace_listings", {"product_name": "X"}) \
+        == "Finding where to buy"
+
+
+def test_label_for_unknown_function_returns_function_name():
+    """Functions absent from FUNCTION_LABELS fall back to the bare name."""
+    from app.services.chat_service import label_for
+
+    assert label_for("brand_new_function", {}) == "brand_new_function"
+
+
+def test_label_for_missing_args_returns_base_label():
+    """No product_name AND no query → return base label, no 'for' suffix."""
+    from app.services.chat_service import label_for
+
+    assert label_for("search_youtube_reviews", {}) == "Searching YouTube"
