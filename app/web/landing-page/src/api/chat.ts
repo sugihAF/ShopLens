@@ -47,6 +47,7 @@ export interface ProgressEvent {
   step: string
   label?: string
   status: 'running' | 'done'
+  detail?: string
 }
 
 export interface QuestionEvent {

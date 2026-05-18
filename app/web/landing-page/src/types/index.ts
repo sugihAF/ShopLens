@@ -103,6 +103,7 @@ export interface ProgressStep {
   step: string
   label: string
   status: 'running' | 'done'
+  detail?: string
 }
 
 export interface ChatMessage {
