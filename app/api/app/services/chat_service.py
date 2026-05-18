@@ -1,5 +1,6 @@
 """Chat service with multi-provider LLM function calling integration."""
 
+import asyncio
 import json
 import time
 from typing import Optional, List, Dict, Any, Callable, Awaitable
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.circuit_breaker import gemini_breaker
+from app.services.chat_exceptions import ChatCancelled
 from app.core.logging import (
     get_logger, log_header, log_success, log_fail, log_detail, elapsed_str,
     BOLD, CYAN, DIM, GREEN, YELLOW, MAGENTA, RESET, LINE,
@@ -24,6 +26,7 @@ from app.schemas.chat import (
 )
 from app.functions.registry import FUNCTION_DECLARATIONS, execute_function
 from app.services.llm_service import get_llm_provider, BaseLLMProvider
+from app.services import progress as progress_ctx
 
 logger = get_logger(__name__)
 
@@ -45,6 +48,35 @@ FUNCTION_LABELS = {
     "get_product_reviews": "Fetching reviews",
     "semantic_search": "Searching knowledge base",
 }
+
+# Functions that emit their own progress events under composite step ids
+# (e.g. "ingest_reviews_batch:iphone-15-pro"). chat_service skips its auto
+# start/done emits for these so they don't produce orphan rows.
+# See: docs/superpowers/specs/2026-05-18-granular-progress-events-design.md
+SELF_EMITS_PROGRESS = {"ingest_reviews_batch"}
+
+# Functions whose progress label should be enriched with the product / query
+# argument so users see e.g. "Searching YouTube for iPhone 15 Pro".
+LABEL_ENRICHED = {
+    "search_youtube_reviews",
+    "search_blog_reviews",
+    "get_reviews_summary",
+}
+
+
+def label_for(fn_name: str, args: dict) -> str:
+    """Build the progress label for a function call.
+
+    - For functions in LABEL_ENRICHED, append "for <product_name or query>".
+    - For others, return the bare base label from FUNCTION_LABELS.
+    - For unknown functions, return the function name itself.
+    """
+    base = FUNCTION_LABELS.get(fn_name, fn_name)
+    if fn_name in LABEL_ENRICHED:
+        target = args.get("product_name") or args.get("query")
+        if target:
+            return f"{base} for {target}"
+    return base
 
 # System prompt for ShopLens AI
 SYSTEM_PROMPT = """You are ShopLens, an AI assistant that helps users make informed purchasing decisions by aggregating and analyzing product reviews from trusted tech reviewers on YouTube and tech blogs.
@@ -155,6 +187,8 @@ class ChatService:
         self.db = db
         self.provider: Optional[BaseLLMProvider] = None
         self.tools = None
+        self.current_conversation_id: Optional[UUID] = None
+        self.on_question: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None
         self._init_provider()
 
     def _init_provider(self):
@@ -172,6 +206,8 @@ class ChatService:
         request: ChatRequest,
         user_id: Optional[int] = None,
         on_progress: Optional[Callable[[Dict[str, str]], Awaitable[None]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        on_question: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None,
     ) -> ChatResponse:
         """
         Process a chat message using Gemini with function calling.
@@ -191,6 +227,11 @@ class ChatService:
             raise RuntimeError(
                 "LLM provider is not initialized. Please check your API keys and LLM_PROVIDER setting."
             )
+
+        # Store on_question on the service so tools that opt in can reach it via
+        # the service context. No built-in tool consumes this in v1 — it's plumbed
+        # but unused. See docs/superpowers/specs/2026-05-15-chat-websocket-design.md.
+        self.on_question = on_question
 
         start_time = time.time()
         functions_called = []
@@ -212,6 +253,8 @@ class ChatService:
                 title=self._generate_title(request.message)
             )
 
+        self.current_conversation_id = conversation.id
+
         # Save user message
         user_message = await conversation_crud.add_message(
             self.db,
@@ -223,6 +266,7 @@ class ChatService:
         # Get conversation history for context (excluding the message we just saved)
         history = await self._build_chat_history_excluding_last(conversation.id)
 
+        progress_token = progress_ctx.set_emitter(on_progress) if on_progress else None
         try:
             # Check circuit breaker before making Gemini calls
             if not gemini_breaker.allow_request():
@@ -288,6 +332,13 @@ class ChatService:
             # Handle function calling loop (provider-agnostic)
             iteration = 0
             while self.provider.has_function_call(response) and iteration < MAX_FUNCTION_CALL_ITERATIONS:
+                # Cooperative cancellation check — fires between tool calls.
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ChatCancelled(
+                        conversation_id=str(self.current_conversation_id),
+                        reason="user",
+                    )
+
                 # Extract function call from response
                 fc = self.provider.extract_function_call(response)
                 function_call_part = self.provider.extract_function_call_part(response)
@@ -306,13 +357,13 @@ class ChatService:
                 )
                 logger.info(f"{BOLD}{CYAN}[fn {fn_step}]{RESET} {function_name}({short_args})")
 
-                # Emit progress: function starting
-                if on_progress:
+                # Emit progress: function starting (skip for self-emitting tools)
+                if on_progress and function_name not in SELF_EMITS_PROGRESS:
                     await on_progress({
                         "type": "progress",
                         "step": function_name,
                         "status": "running",
-                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                        "label": label_for(function_name, function_args),
                     })
 
                 # Execute the function
@@ -341,13 +392,13 @@ class ChatService:
                 else:
                     logger.info(f"  {DIM}→ {result_status or 'done'}{RESET} {fn_elapsed}")
 
-                # Emit progress: function done
-                if on_progress:
+                # Emit progress: function done (skip for self-emitting tools)
+                if on_progress and function_name not in SELF_EMITS_PROGRESS:
                     await on_progress({
                         "type": "progress",
                         "step": function_name,
                         "status": "done",
-                        "label": FUNCTION_LABELS.get(function_name, function_name),
+                        "label": label_for(function_name, function_args),
                     })
 
                 # Store function result for attachment extraction
@@ -415,10 +466,18 @@ class ChatService:
                     f"No function calls made for what appears to be a product question: {request.message[:100]}"
                 )
 
+        except ChatCancelled:
+            # Cancellation is signal flow, not an error — let it propagate so
+            # the WS supervisor can emit the `cancelled` event and persist a
+            # cancelled assistant message in place of the normal one.
+            raise
         except Exception as e:
             logger.error(f"LLM API error: {e}", exc_info=True)
             final_response = "I'm sorry, I encountered an error processing your request. Please try again."
             functions_called = []
+        finally:
+            if progress_token is not None:
+                progress_ctx.reset_emitter(progress_token)
 
         execution_time = int((time.time() - start_time) * 1000)
 

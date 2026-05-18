@@ -32,8 +32,9 @@ export default defineConfig({
       '/api': {
         target: 'http://api:8000',
         changeOrigin: true,
-        timeout: 300_000, // 5 min — review ingestion can take 2+ min
-        proxyTimeout: 300_000,
+        ws: true,
+        timeout: 600_000, // 10 min — matches nginx.conf and accommodates long ingestion
+        proxyTimeout: 600_000,
       },
     },
   },
