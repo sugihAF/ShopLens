@@ -28,6 +28,7 @@ from app.core.config import settings
 from app.core.logging import get_logger, log_success, log_detail, log_fail, log_warn
 from app.core.circuit_breaker import gemini_breaker
 from app.services.cache_service import cache
+from app.services import progress as progress_ctx
 from app.models.product import Product
 from app.models.reviewer import Reviewer, Platform
 from app.models.review import Review, ReviewType, ProcessingStatus
@@ -1038,15 +1039,9 @@ async def ingest_reviews_batch(db: AsyncSession, args: Dict[str, Any]) -> Dict[s
     """
     Ingest multiple YouTube and blog reviews in parallel.
 
-    Each parallel task gets its own AsyncSession because AsyncSession
-    is not safe for concurrent use.
-
-    Args:
-        db: Database session (unused — each task creates its own)
-        args: {product_name: str, youtube_urls?: list[str], blog_urls?: list[str]}
-
-    Returns:
-        Aggregate results with succeeded/failed counts
+    Emits per-batch progress under step "ingest_reviews_batch:<product-slug>"
+    with a live "k/N" counter as each parallel task completes. See:
+    docs/superpowers/specs/2026-05-18-granular-progress-events-design.md
     """
     product_name = args.get("product_name", "").strip()
     youtube_urls = args.get("youtube_urls") or []
@@ -1058,44 +1053,82 @@ async def ingest_reviews_batch(db: AsyncSession, args: Dict[str, Any]) -> Dict[s
     if not youtube_urls and not blog_urls:
         return {"error": "At least one of youtube_urls or blog_urls is required"}
 
-    # Semaphore to limit concurrent Gemini calls
     semaphore = asyncio.Semaphore(5)
 
-    async def _ingest_one(ingest_fn, fn_args: Dict[str, Any]) -> Dict[str, Any]:
-        """Run a single ingestion with its own DB session."""
+    async def _ingest_one(idx: int, ingest_fn, fn_args: Dict[str, Any]):
+        """Run a single ingestion with its own DB session; tag with input index."""
         async with semaphore:
             async with AsyncSessionLocal() as session:
                 try:
                     result = await ingest_fn(session, fn_args)
                     await session.commit()
-                    return result
+                    return idx, result
                 except Exception as e:
                     await session.rollback()
-                    return {"status": "error", "error": str(e)}
+                    return idx, {"status": "error", "error": str(e)}
 
-    # Build task list
-    tasks = []
+    # Build indexed task list so we can restore input order after as_completed.
+    coros = []
+    next_idx = 0
     for url in youtube_urls:
-        tasks.append(_ingest_one(
-            ingest_youtube_review,
-            {"video_url": url, "product_name": product_name}
-        ))
+        coros.append(_ingest_one(next_idx, ingest_youtube_review,
+                                 {"video_url": url, "product_name": product_name}))
+        next_idx += 1
     for url in blog_urls:
-        tasks.append(_ingest_one(
-            ingest_blog_review,
-            {"url": url, "product_name": product_name}
-        ))
+        coros.append(_ingest_one(next_idx, ingest_blog_review,
+                                 {"url": url, "product_name": product_name}))
+        next_idx += 1
 
-    logger.info(f"Batch ingestion: {len(youtube_urls)} YouTube + {len(blog_urls)} blog URLs in parallel")
+    total = len(coros)
+    step_id = f"ingest_reviews_batch:{progress_ctx.slug(product_name)}"
+    label = f"Analyzing reviews for {product_name}"
 
-    # Run all in parallel
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info(
+        f"Batch ingestion: {len(youtube_urls)} YouTube + {len(blog_urls)} blog URLs in parallel"
+    )
 
-    # Aggregate results
+    # Emit start event with 0/N.
+    await progress_ctx.emit({
+        "type": "progress",
+        "step": step_id,
+        "status": "running",
+        "label": label,
+        "detail": f"0/{total}",
+    })
+
+    # Run all in parallel; tick the counter as each finishes.
+    results_by_idx: Dict[int, Any] = {}
+    futures = [asyncio.ensure_future(c) for c in coros]
+    done_count = 0
+    for finished in asyncio.as_completed(futures):
+        try:
+            idx, result = await finished
+        except Exception as e:
+            # _ingest_one already catches internally; this branch shouldn't fire,
+            # but if it does we don't know which idx — slot under a negative key
+            # to keep the counter accurate without colliding with real indices.
+            idx = -1 - done_count
+            result = e
+        results_by_idx[idx] = result
+        done_count += 1
+        if done_count < total:
+            await progress_ctx.emit({
+                "type": "progress",
+                "step": step_id,
+                "status": "running",
+                "label": label,
+                "detail": f"{done_count}/{total}",
+            })
+
+    # Reassemble in input order; negative-key synthetic failures appended last.
+    ordered = [results_by_idx[i] for i in range(total) if i in results_by_idx]
+    for i in sorted(k for k in results_by_idx if k < 0):
+        ordered.append(results_by_idx[i])
+
     succeeded = 0
     failed = 0
     details = []
-    for i, result in enumerate(results):
+    for result in ordered:
         if isinstance(result, Exception):
             failed += 1
             details.append({"status": "error", "error": str(result)})
@@ -1111,12 +1144,19 @@ async def ingest_reviews_batch(db: AsyncSession, args: Dict[str, Any]) -> Dict[s
 
     logger.info(f"Batch ingestion complete: {succeeded} succeeded, {failed} failed")
 
+    await progress_ctx.emit({
+        "type": "progress",
+        "step": step_id,
+        "status": "done",
+        "label": label,
+    })
+
     return {
         "status": "success" if succeeded > 0 else "error",
         "succeeded": succeeded,
         "failed": failed,
-        "total": len(tasks),
-        "results": details
+        "total": total,
+        "results": details,
     }
 
 
