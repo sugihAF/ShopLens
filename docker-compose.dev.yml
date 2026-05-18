@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
     tty: true
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://shoplens:shoplens@postgres:5432/shoplens
       - REDIS_URL=redis://redis:6379/0
@@ -46,6 +46,7 @@ services:
       - ./app/api/alembic:/app/alembic:ro
       - ./app/api/alembic.ini:/app/alembic.ini:ro
       - ./app/api/run_pipeline.py:/app/run_pipeline.py:ro
+      - ./app/api/tests:/app/tests:ro
     # Override entrypoint to use --reload flag
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
@@ -98,7 +99,7 @@ services:
     container_name: shoplens-postgres-dev
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       - POSTGRES_USER=shoplens
       - POSTGRES_PASSWORD=shoplens
@@ -122,7 +123,7 @@ services:
     container_name: shoplens-redis-dev
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data_dev:/data
